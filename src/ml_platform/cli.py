@@ -26,6 +26,9 @@ app.add_typer(process_app, name="process")
 codegen_app = typer.Typer(help="Code generation commands")
 app.add_typer(codegen_app, name="codegen")
 
+run_app = typer.Typer(help="Full pipeline orchestration commands")
+app.add_typer(run_app, name="run")
+
 console = Console()
 
 
@@ -364,6 +367,150 @@ def version() -> None:
     from ml_platform import __version__
 
     console.print(f"[bold]ml-research-platform[/] v{__version__}")
+
+
+# ── Run commands (orchestration) ──────────────────────────────────────────
+
+
+@run_app.command("paper")
+def run_paper(
+    paper_id: str = typer.Argument(help="Paper arXiv ID (e.g. 2312.00752)"),
+    mode: str = typer.Option("optimized", "--mode", "-m", help="Codegen mode: optimized, comprehensive"),
+    provider: str = typer.Option("openai", "--provider", "-p", help="LLM provider: openai, anthropic, google"),
+    model: str = typer.Option("", "--model", help="Specific model name"),
+    skip_codegen: bool = typer.Option(False, "--skip-codegen", help="Skip code generation"),
+    no_push: bool = typer.Option(False, "--no-push", help="Skip GitHub push"),
+    no_report: bool = typer.Option(False, "--no-report", help="Skip Notion reporting"),
+    force: bool = typer.Option(False, "--force", help="Force re-processing"),
+) -> None:
+    """Run the full pipeline on a single paper: download → process → codegen → push → report."""
+    from ml_platform.orchestration.orchestrator import ResearchOrchestrator
+
+    console.print(f"\n[bold blue]🚀 Full pipeline:[/] {paper_id}")
+    console.print(f"  Mode: {mode} | Provider: {provider}\n")
+
+    orchestrator = ResearchOrchestrator(
+        codegen_mode=mode,
+        codegen_provider=provider,
+        codegen_model=model,
+        skip_codegen=skip_codegen,
+        push_to_github=not no_push,
+        report_to_notion=not no_report,
+        progress_callback=lambda stage, pct, msg: console.print(
+            f"  [{stage}] {pct:.0f}% — {msg}"
+        ),
+    )
+
+    with console.status("[bold]Running pipeline..."):
+        result = asyncio.run(orchestrator.run_paper(paper_id, force=force))
+
+    # Display result
+    if result.success:
+        console.print("\n[bold green]✅ Pipeline complete![/]")
+    else:
+        console.print(f"\n[bold red]❌ Pipeline failed:[/] {result.error}")
+
+    table = Table(show_header=False, box=None)
+    table.add_column("key", style="dim")
+    table.add_column("value")
+    table.add_row("PDF", result.pdf_path or "—")
+    table.add_row("Text", f"{result.text_chars:,} chars" if result.text_chars else "—")
+    table.add_row("Enriched", "✅" if result.enriched else "—")
+    table.add_row("Code", f"{len(result.code_files)} files" if result.code_files else "—")
+    table.add_row("Repo", result.repo_url or "—")
+    table.add_row("Notion", result.notion_url or "—")
+    table.add_row("Duration", f"{result.total_duration:.1f}s")
+    console.print(table)
+
+
+@run_app.command("topic")
+def run_topic(
+    topic: str = typer.Argument(help="Search topic"),
+    top: int = typer.Option(5, "--top", "-n", help="Number of papers to process"),
+    mode: str = typer.Option("optimized", "--mode", "-m", help="Codegen mode"),
+    provider: str = typer.Option("openai", "--provider", "-p", help="LLM provider"),
+    skip_codegen: bool = typer.Option(False, "--skip-codegen", help="Skip code generation"),
+    no_push: bool = typer.Option(False, "--no-push", help="Skip GitHub push"),
+    no_report: bool = typer.Option(False, "--no-report", help="Skip Notion reporting"),
+    force: bool = typer.Option(False, "--force"),
+) -> None:
+    """Discover papers on a topic and run the full pipeline."""
+    from ml_platform.orchestration.orchestrator import ResearchOrchestrator
+
+    console.print(f"\n[bold blue]🚀 Full pipeline (topic):[/] {topic} (top {top})\n")
+
+    orchestrator = ResearchOrchestrator(
+        codegen_mode=mode,
+        codegen_provider=provider,
+        skip_codegen=skip_codegen,
+        push_to_github=not no_push,
+        report_to_notion=not no_report,
+        max_concurrent=2,
+        progress_callback=lambda stage, pct, msg: console.print(
+            f"  [{stage}] {pct:.0f}% — {msg}"
+        ),
+    )
+
+    with console.status("[bold]Running pipeline..."):
+        result = asyncio.run(orchestrator.run_topic(topic, top_n=top, force=force))
+
+    console.print(f"\n[bold]Results:[/] {result.successful} ✅  {result.failed} ❌  {result.skipped} ⏭")
+    for r in result.results:
+        if r.skipped:
+            console.print(f"  ⏭ {r.paper_id} (skipped — already has code)")
+        elif r.success:
+            repo = f" → {r.repo_url}" if r.repo_url else ""
+            console.print(f"  ✅ {r.paper_title[:50]}{repo} ({r.total_duration:.1f}s)")
+        else:
+            console.print(f"  ❌ {r.paper_id}: {r.error[:60]}")
+    console.print(f"\n  [dim]Total: {result.total_duration:.1f}s[/dim]")
+
+
+@run_app.command("daily")
+def run_daily(
+    top: int = typer.Option(10, "--top", "-n", help="Papers per topic"),
+    mode: str = typer.Option("optimized", "--mode", "-m", help="Codegen mode"),
+    provider: str = typer.Option("openai", "--provider", "-p", help="LLM provider"),
+    skip_codegen: bool = typer.Option(False, "--skip-codegen", help="Skip code generation"),
+    no_push: bool = typer.Option(False, "--no-push", help="Skip GitHub push"),
+    no_report: bool = typer.Option(False, "--no-report", help="Skip Notion reporting"),
+) -> None:
+    """Run daily pipeline for all configured topics."""
+    from ml_platform.config import config
+    from ml_platform.orchestration.orchestrator import ResearchOrchestrator
+
+    console.print(f"\n[bold blue]🚀 Daily Pipeline Run[/]")
+    console.print(f"  Topics: {', '.join(config.DEFAULT_TOPICS)}")
+    console.print(f"  Top {top} per topic | Mode: {mode} | Provider: {provider}\n")
+
+    orchestrator = ResearchOrchestrator(
+        codegen_mode=mode,
+        codegen_provider=provider,
+        skip_codegen=skip_codegen,
+        push_to_github=not no_push,
+        report_to_notion=not no_report,
+        max_concurrent=2,
+        progress_callback=lambda stage, pct, msg: console.print(
+            f"  [{stage}] {pct:.0f}% — {msg}"
+        ),
+    )
+
+    with console.status("[bold]Running daily pipeline... (this may take a while)"):
+        results = asyncio.run(orchestrator.run_daily(top_n=top))
+
+    total_success = sum(r.successful for r in results)
+    total_failed = sum(r.failed for r in results)
+    total_skipped = sum(r.skipped for r in results)
+
+    console.print(f"\n[bold green]Daily Run Complete[/]")
+    for r in results:
+        console.print(
+            f"  {r.topic}: {r.successful} ✅  {r.failed} ❌  {r.skipped} ⏭"
+            f" ({r.total_duration:.1f}s)"
+        )
+    console.print(
+        f"\n  Total: {total_success} success, {total_failed} failed, {total_skipped} skipped"
+    )
 
 
 if __name__ == "__main__":
