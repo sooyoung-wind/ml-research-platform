@@ -61,8 +61,8 @@ class DeepCodeConfig:
     """Configuration for DeepCode pipeline.
 
     Attributes:
-        llm_provider: LLM provider ("openai", "anthropic", or "google").
-        model_name: Provider-specific model name.
+        llm_provider: LLM provider ("openai", "anthropic", "google", or "ollama").
+        model_name: Provider-specific model name (e.g. "gpt-4o", "qwen3:8b").
         planning_model: Optional separate model for planning.
         enable_indexing: Enable CodeRAG reference mining (comprehensive mode).
         enable_segmentation: Enable document segmentation for long papers.
@@ -72,9 +72,10 @@ class DeepCodeConfig:
         openai_api_key: OpenAI API key (falls back to env var).
         anthropic_api_key: Anthropic API key (falls back to env var).
         google_api_key: Google API key (falls back to env var).
+        ollama_base_url: Ollama server URL (default: http://localhost:11434).
     """
 
-    # LLM provider: "openai" | "anthropic" | "google"
+    # LLM provider: "openai" | "anthropic" | "google" | "ollama"
     llm_provider: str = "openai"
     # Model name (provider-specific)
     model_name: str = "gpt-4o"
@@ -94,6 +95,8 @@ class DeepCodeConfig:
     openai_api_key: str = ""
     anthropic_api_key: str = ""
     google_api_key: str = ""
+    # Ollama settings (local inference, no API key needed)
+    ollama_base_url: str = "http://localhost:11434"
 
 
 class DeepCodeRunner:
@@ -152,20 +155,34 @@ class DeepCodeRunner:
         # Write secrets file
         secrets = {}
         if keys["openai"]:
-            secrets["openai"] = {"api_key": keys["openai"]}
+            secrets.setdefault("openai", {})["api_key"] = keys["openai"]
         if keys["anthropic"]:
-            secrets["anthropic"] = {"api_key": keys["anthropic"]}
+            secrets.setdefault("anthropic", {})["api_key"] = keys["anthropic"]
         if keys["google"]:
-            secrets["google"] = {"api_key": keys["google"]}
+            secrets.setdefault("google", {})["api_key"] = keys["google"]
 
         secrets_path = self.config_dir / "mcp_agent.secrets.yaml"
         with open(secrets_path, "w") as f:
             yaml.dump(secrets, f, default_flow_style=False)
 
         # Write main config
-        main_config = {
+        main_config: dict = {
             "llm_provider": self.config.llm_provider,
         }
+
+        # Ollama support for CWD-based execution
+        if self.config.llm_provider == "ollama":
+            main_config["default_model"] = "ollama"
+            base_url = self.config.ollama_base_url.rstrip("/") + "/v1"
+            main_config.setdefault("openai", {})["base_url"] = base_url
+            main_config["openai"]["api_key"] = "ollama"
+            main_config["openai"][
+                "default_model"
+            ] = self.config.model_name or "qwen3:8b"
+            secrets.setdefault("openai", {})["api_key"] = "ollama"
+            with open(secrets_path, "w") as f:
+                yaml.dump(secrets, f, default_flow_style=False)
+
         config_path = self.config_dir / "mcp_agent.config.yaml"
         with open(config_path, "w") as f:
             yaml.dump(main_config, f, default_flow_style=False)
@@ -284,22 +301,51 @@ class DeepCodeRunner:
         tmp_paper = os.path.join(tmpdir, paper_name)
         shutil.copy2(paper_path, tmp_paper)
 
-        keys = {
-            "openai": self.config.openai_api_key or os.environ.get("OPENAI_API_KEY", ""),
-            "anthropic": self.config.anthropic_api_key or os.environ.get("ANTHROPIC_API_KEY", ""),
-            "google": self.config.google_api_key or os.environ.get("GOOGLE_API_KEY", "")
-            or os.environ.get("GEMINI_API_KEY", ""),
-        }
+        # Build mcp-agent secrets YAML (nested format expected by mcp_agent)
+        secrets: dict = {}
+        openai_key = (
+            self.config.openai_api_key
+            or os.environ.get("OPENAI_API_KEY", "")
+        )
+        anthropic_key = (
+            self.config.anthropic_api_key
+            or os.environ.get("ANTHROPIC_API_KEY", "")
+        )
+        google_key = (
+            self.config.google_api_key
+            or os.environ.get("GOOGLE_API_KEY", "")
+            or os.environ.get("GEMINI_API_KEY", "")
+        )
 
-        secrets = {}
-        for provider, key in keys.items():
-            if key:
-                secrets[provider] = {"api_key": key}
+        if openai_key:
+            secrets.setdefault("openai", {})["api_key"] = openai_key
+        if anthropic_key:
+            secrets.setdefault("anthropic", {})["api_key"] = anthropic_key
+        if google_key:
+            secrets.setdefault("google", {})["api_key"] = google_key
 
         with open(os.path.join(tmpdir, "mcp_agent.secrets.yaml"), "w") as f:
             yaml.dump(secrets, f, default_flow_style=False)
 
-        main_config = {"llm_provider": self.config.llm_provider}
+        # Build mcp-agent config YAML
+        main_config: dict = {}
+        if self.config.llm_provider:
+            main_config["llm_provider"] = self.config.llm_provider
+
+        # Ollama support: set openai.base_url to Ollama endpoint
+        if self.config.llm_provider == "ollama":
+            main_config["default_model"] = "ollama"
+            base_url = self.config.ollama_base_url.rstrip("/") + "/v1"
+            main_config.setdefault("openai", {})["base_url"] = base_url
+            main_config["openai"]["api_key"] = "ollama"
+            main_config["openai"][
+                "default_model"
+            ] = self.config.model_name or "qwen3:8b"
+            # Write dummy openai key in secrets so get_api_keys finds it
+            secrets.setdefault("openai", {})["api_key"] = "ollama"
+            with open(os.path.join(tmpdir, "mcp_agent.secrets.yaml"), "w") as f:
+                yaml.dump(secrets, f, default_flow_style=False)
+
         with open(os.path.join(tmpdir, "mcp_agent.config.yaml"), "w") as f:
             yaml.dump(main_config, f, default_flow_style=False)
 
@@ -403,8 +449,8 @@ async def generate_code(
         paper_id: Paper identifier.
         paper_title: Paper title.
         mode: "optimized" (fast) or "comprehensive" (full).
-        llm_provider: "openai" | "anthropic" | "google".
-        model_name: Specific model to use.
+        llm_provider: "openai" | "anthropic" | "google" | "ollama".
+        model_name: Specific model to use (e.g. "gpt-4o", "qwen3:8b").
         output_dir: Where to save generated code.
         progress_callback: Progress callback.
 

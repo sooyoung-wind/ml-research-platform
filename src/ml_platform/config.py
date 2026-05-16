@@ -89,6 +89,10 @@ class APIConfig:
     # Google (code generation)
     GOOGLE_API_KEY: str = os.getenv("GOOGLE_API_KEY", os.getenv("GEMINI_API_KEY", ""))
 
+    # Ollama (local code generation, no API key needed)
+    OLLAMA_BASE_URL: str = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+    OLLAMA_DEFAULT_MODEL: str = os.getenv("OLLAMA_DEFAULT_MODEL", "qwen3:8b")
+
 
 class AppConfig:
     """Application-level settings for directories, defaults, and weights.

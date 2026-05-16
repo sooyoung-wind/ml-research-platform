@@ -10,7 +10,7 @@ import asyncio
 import logging
 from typing import Any
 
-from ml_platform.discovery.huggingface_client import HuggingFacePapersClient
+from ml_platform.discovery.huggingface_client import HuggingFaceClient
 from ml_platform.discovery.semantic_scholar_client import SemanticScholarClient
 from ml_platform.models import Paper, ProcessingStatus
 
@@ -26,13 +26,13 @@ class MetadataEnricher:
 
     Attributes:
         s2: SemanticScholarClient instance for citation and venue data.
-        hf: HuggingFacePapersClient instance for code and upvote data.
+        hf: HuggingFaceClient instance for code and upvote data.
     """
 
     def __init__(self) -> None:
         """Initialize the MetadataEnricher with default API clients."""
         self.s2 = SemanticScholarClient()
-        self.hf = HuggingFacePapersClient()
+        self.hf = HuggingFaceClient()
 
     async def __aenter__(self) -> MetadataEnricher:
         """Enter the async context manager.
@@ -129,19 +129,16 @@ class MetadataEnricher:
             logger.warning("S2 enrichment by DOI failed for %s: %s", paper.doi, exc)
 
     async def _enrich_hf(self, paper: Paper) -> None:
-        """Check code availability via HuggingFace Papers.
-
-        Args:
-            paper: The Paper object to enrich in-place.
-        """
+        """Check code availability via HuggingFace Papers."""
         if not paper.arxiv_id:
             return
 
-        result = await self.hf.check_code_available(paper.arxiv_id)
-        if result.get("has_code") and not paper.code_url:
-            paper.code_url = result["code_url"]
-
-        # Also get upvotes
-        paper_data = await self.hf.get_paper(paper.arxiv_id)
-        if paper_data and paper_data.upvotes > paper.upvotes:
-            paper.upvotes = paper_data.upvotes
+        try:
+            hf_paper = await self.hf.get_paper(paper.arxiv_id)
+            if hf_paper:
+                if hf_paper.code_url and not paper.code_url:
+                    paper.code_url = hf_paper.code_url
+                if hf_paper.upvotes > paper.upvotes:
+                    paper.upvotes = hf_paper.upvotes
+        except Exception as e:
+            logger.warning(f"HF enrichment failed for {paper.arxiv_id}: {e}")

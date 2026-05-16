@@ -8,11 +8,34 @@ from __future__ import annotations
 
 import asyncio
 import os
+from pathlib import Path
 
 import typer
+from dotenv import load_dotenv
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
+
+# Load .env files: project local > ~/.hermes/.env > home .env
+for _env_path in [
+    Path(".env"),
+    Path.home() / ".hermes" / ".env",
+    Path.home() / ".env",
+]:
+    if _env_path.exists():
+        load_dotenv(_env_path, override=False)
+        break
+
+
+def _check_ollama() -> bool:
+    """Check if Ollama server is running locally."""
+    import httpx
+
+    try:
+        r = httpx.get("http://localhost:11434/api/tags", timeout=2)
+        return r.status_code == 200
+    except Exception:
+        return False
 
 app = typer.Typer(
     name="ml-research",
@@ -31,6 +54,9 @@ app.add_typer(codegen_app, name="codegen")
 
 run_app = typer.Typer(help="Full pipeline orchestration commands")
 app.add_typer(run_app, name="run")
+
+setup_app = typer.Typer(help="Setup and patching commands")
+app.add_typer(setup_app, name="setup")
 
 console = Console()
 
@@ -366,7 +392,10 @@ def codegen_status() -> None:
     providers = {
         "OpenAI": bool(os.environ.get("OPENAI_API_KEY")),
         "Anthropic": bool(os.environ.get("ANTHROPIC_API_KEY")),
-        "Google": bool(os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")),
+        "Google": bool(
+            os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
+        ),
+        "Ollama (local)": _check_ollama(),
     }
 
     for name, configured in providers.items():
@@ -584,6 +613,17 @@ def run_daily(
     console.print(
         f"\n  Total: {total_success} success, {total_failed} failed, {total_skipped} skipped"
     )
+
+
+# ── Setup commands ─────────────────────────────────────────────────────
+
+
+@setup_app.command("deepcode")
+def setup_deepcode() -> None:
+    """Patch DeepCode package (missing modules + Ollama support)."""
+    from ml_platform.codegen.deepcode_setup import run_setup
+
+    run_setup()
 
 
 if __name__ == "__main__":

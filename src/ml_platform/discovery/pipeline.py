@@ -174,6 +174,9 @@ class DiscoveryPipeline:
         async with self.hf:
             for paper in papers:
                 if paper.arxiv_id and not paper.code_url:
-                    result = await self.hf.check_code_available(paper.arxiv_id)
-                    if result.get("has_code"):
-                        paper.code_url = result.get("code_url")
+                    try:
+                        hf_paper = await self.hf.get_paper(paper.arxiv_id)
+                        if hf_paper and hf_paper.code_url:
+                            paper.code_url = hf_paper.code_url
+                    except Exception:
+                        pass

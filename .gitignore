@@ -31,3 +31,4 @@ Thumbs.db
 .coverage
 htmlcov/
 .pytest_cache/
+data/codegen/.deepcode/
