@@ -21,7 +21,7 @@ class APIConfig:
     SEMANTIC_SCHOLAR_RATE_LIMIT: float = 1.0  # requests per second (with key: 10)
 
     # arXiv
-    ARXIV_BASE_URL: str = "http://export.arxiv.org/api/query"
+    ARXIV_BASE_URL: str = "https://export.arxiv.org/api/query"
     ARXIV_RATE_LIMIT: float = 1.0  # generous, no auth needed
 
     # PapersWithCode

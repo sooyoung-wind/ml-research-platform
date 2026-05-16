@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
+from typing import Optional
+
 import typer
-from rich import print as rprint
+from rich.console import Console
+from rich.panel import Panel
+from rich.table import Table
 
 app = typer.Typer(
     name="ml-research",
@@ -20,6 +25,8 @@ app.add_typer(process_app, name="process")
 codegen_app = typer.Typer(help="Code generation commands")
 app.add_typer(codegen_app, name="codegen")
 
+console = Console()
+
 
 # ── Discover commands ──────────────────────────────────────────────────────
 
@@ -30,21 +37,67 @@ def discover_search(
     top: int = typer.Option(10, "--top", "-n", help="Number of results"),
     source: str = typer.Option("all", "--source", "-s", help="Source: all, arxiv, semantic_scholar, pwc"),
 ) -> None:
-    """Search for papers on a topic."""
-    rprint(f"[bold blue]🔍 Searching for:[/] {topic} (top {top}, source: {source})")
-    rprint("[dim]Paper discovery pipeline will be implemented in Phase 1[/dim]")
+    """Search for papers on a topic across multiple sources."""
+    from ml_platform.discovery.pipeline import DiscoveryPipeline
+
+    console.print(f"\n[bold blue]🔍 Searching:[/] {topic} (top {top}, source: {source})\n")
+
+    sources = None if source == "all" else [source]
+    pipeline = DiscoveryPipeline()
+
+    with console.status("Fetching papers..."):
+        result = asyncio.run(pipeline.search(query=topic, top_n=top, sources=sources))
+
+    # Display results
+    table = Table(show_header=True, header_style="bold magenta")
+    table.add_column("#", style="dim", width=3)
+    table.add_column("Score", width=6)
+    table.add_column("Title", min_width=40, max_width=60)
+    table.add_column("Citations", width=9, justify="right")
+    table.add_column("Code", width=5, justify="center")
+    table.add_column("Source", width=8)
+    table.add_column("Published", width=10)
+
+    for i, paper in enumerate(result.papers, 1):
+        title = paper.title[:58] + ".." if len(paper.title) > 58 else paper.title
+        citations = str(paper.citation_count) if paper.citation_count else "-"
+        code = "✅" if paper.has_code else "—"
+        score = f"{paper.composite_score:.2f}" if paper.composite_score else "-"
+        source = paper.source.value.replace("_", " ").title()
+        published = paper.published_date.strftime("%Y-%m-%d") if paper.published_date else "-"
+
+        table.add_row(str(i), score, title, citations, code, source, published)
+
+    console.print(table)
+    console.print(
+        f"\n[dim]Found {result.total_found} papers in {result.duration_seconds}s "
+        f"(showing top {len(result.papers)})[/dim]"
+    )
 
 
 @discover_app.command("daily")
 def discover_daily(
-    top: int = typer.Option(10, "--top", "-n", help="Number of results"),
+    top: int = typer.Option(10, "--top", "-n", help="Results per topic"),
 ) -> None:
-    """Run daily paper discovery for configured topics."""
+    """Run daily paper discovery for all configured topics."""
     from ml_platform.config import config
+    from ml_platform.discovery.pipeline import DiscoveryPipeline
 
-    rprint("[bold blue]📡 Daily Paper Discovery[/]")
-    rprint(f"[dim]Topics: {', '.join(config.DEFAULT_TOPICS)}[/dim]")
-    rprint("[dim]Daily discovery will be implemented in Phase 1[/dim]")
+    console.print("\n[bold blue]📡 Daily Paper Discovery[/]")
+    console.print(f"[dim]Topics: {', '.join(config.DEFAULT_TOPICS)}[/]\n")
+
+    pipeline = DiscoveryPipeline()
+    results = asyncio.run(pipeline.daily_discovery(top_n=top))
+
+    total_papers = 0
+    for result in results:
+        total_papers += result.total_found
+        console.print(
+            f"  [bold]{result.query}[/]: {result.total_found} found, "
+            f"{len(result.papers)} ranked ({result.duration_seconds}s)"
+        )
+
+    console.print(f"\n[bold green]Total: {total_papers} papers across {len(results)} topics[/]")
 
 
 # ── Process commands ───────────────────────────────────────────────────────
@@ -55,8 +108,8 @@ def process_paper(
     paper_id: str = typer.Argument(help="Paper ID (arXiv ID, DOI, etc.)"),
 ) -> None:
     """Process a paper: download PDF, parse, enrich metadata."""
-    rprint(f"[bold blue]📄 Processing paper:[/] {paper_id}")
-    rprint("[dim]Paper processing pipeline will be implemented in Phase 2[/dim]")
+    console.print(f"[bold blue]📄 Processing paper:[/] {paper_id}")
+    console.print("[dim]Paper processing pipeline will be implemented in Phase 2[/dim]")
 
 
 # ── Codegen commands ───────────────────────────────────────────────────────
@@ -68,8 +121,8 @@ def codegen_generate(
     engine: str = typer.Option("papercoder", "--engine", "-e", help="Engine: papercoder, deepcode"),
 ) -> None:
     """Generate code from a paper."""
-    rprint(f"[bold blue]⚙️ Generating code for:[/] {paper_id} (engine: {engine})")
-    rprint("[dim]Code generation will be implemented in Phase 3[/dim]")
+    console.print(f"[bold blue]⚙️ Generating code for:[/] {paper_id} (engine: {engine})")
+    console.print("[dim]Code generation will be implemented in Phase 3[/dim]")
 
 
 # ── Status command ─────────────────────────────────────────────────────────
@@ -83,18 +136,20 @@ def status() -> None:
     db = PapersDB()
     stats = db.get_stats()
 
-    rprint("[bold]ML Research Platform Status[/]")
-    rprint(f"  Database: [green]{db.db_path}[/]")
-    rprint(f"  Total papers: [bold]{stats['total_papers']}[/]")
-    rprint(f"  With code:    {stats['with_code']}")
-    rprint(f"  Without code: {stats['without_code']}")
-    rprint(f"  By status:    {stats['by_status']}")
+    console.print(Panel("[bold]ML Research Platform Status[/]", style="blue"))
+    console.print(f"  Database: [green]{db.db_path}[/]")
+    console.print(f"  Total papers: [bold]{stats['total_papers']}[/]")
+    console.print(f"  With code:    {stats['with_code']}")
+    console.print(f"  Without code: {stats['without_code']}")
+    console.print(f"  By status:    {stats['by_status']}")
 
 
 @app.command("version")
 def version() -> None:
     """Show version."""
-    rprint("[bold]ml-research-platform[/] v0.1.0")
+    from ml_platform import __version__
+
+    console.print(f"[bold]ml-research-platform[/] v{__version__}")
 
 
 if __name__ == "__main__":
