@@ -29,6 +29,12 @@ class MetadataEnricher:
         self.s2 = SemanticScholarClient()
         self.hf = HuggingFacePapersClient()
 
+    async def __aenter__(self) -> MetadataEnricher:
+        return self
+
+    async def __aexit__(self, *args: Any) -> None:
+        pass
+
     async def enrich(self, paper: Paper) -> Paper:
         """Enrich a single paper with external metadata.
 

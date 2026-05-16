@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from typing import Optional
 
 import typer
@@ -122,7 +123,7 @@ def discover_trending(
     for i, paper in enumerate(papers, 1):
         title = paper.title[:58] + ".." if len(paper.title) > 58 else paper.title
         code = "✅" if paper.code_url else "—"
-        stars = "-"  # trending doesn't include stars directly
+        stars = "-"
         table.add_row(str(i), str(paper.upvotes), title, code, stars)
 
     console.print(table)
@@ -135,69 +136,54 @@ def discover_trending(
 @process_app.command("paper")
 def process_paper(
     paper_id: str = typer.Argument(help="Paper arXiv ID (e.g. 2312.00752)"),
-    no_download: bool = typer.Option(False, "--no-download", help="Skip PDF download"),
-    no_parse: bool = typer.Option(False, "--no-parse", help="Skip GROBID parsing"),
+    use_grobid: bool = typer.Option(False, "--grobid", help="Use GROBID for structured parsing"),
     no_enrich: bool = typer.Option(False, "--no-enrich", help="Skip metadata enrichment"),
     force: bool = typer.Option(False, "--force", help="Re-process even if already done"),
 ) -> None:
-    """Process a paper: download PDF, parse with GROBID, enrich metadata."""
-    import time as _time
+    """Process a paper: download PDF, extract text, enrich metadata."""
     from ml_platform.models import Paper, PaperSource
+    from ml_platform.processing.processor import PaperProcessor
 
     console.print(f"\n[bold blue]📄 Processing paper:[/] {paper_id}\n")
 
-    # Create a Paper object from the ID
     paper = Paper(
         paper_id=f"arxiv_{paper_id}",
         arxiv_id=paper_id,
-        title=paper_id,  # will be filled by enrichment
+        title=paper_id,
         source=PaperSource.ARXIV,
         pdf_url=f"https://arxiv.org/pdf/{paper_id}",
     )
 
-    from ml_platform.processing.pipeline import ProcessingPipeline
-    pipeline = ProcessingPipeline()
+    processor = PaperProcessor(use_grobid=use_grobid, enrich_metadata=not no_enrich)
+    result = asyncio.run(processor.process_paper(paper, force=force))
 
-    start = _time.time()
-    result = asyncio.run(pipeline.process_paper(
-        paper,
-        download=not no_download,
-        parse=not no_parse,
-        enrich=not no_enrich,
-        force=force,
-    ))
-
-    # Display result
     if result.success:
         console.print("[bold green]✅ Processing complete![/]")
     else:
         console.print(f"[bold red]❌ Processing failed:[/] {result.error}")
 
-    if result.download:
-        dl = result.download
-        if dl.get("skipped"):
-            console.print(f"  [dim]PDF: skipped (already downloaded)[/]")
-        elif dl.get("success"):
-            size_kb = (dl.get("size_bytes", 0) or 0) / 1024
-            console.print(f"  PDF: {dl.get('path')} ({size_kb:.0f} KB)")
-        else:
-            console.print(f"  [red]PDF download failed: {dl.get('error')}[/]")
+    if result.download.get("success"):
+        size_kb = (result.download.get("size_bytes", 0) or 0) / 1024
+        console.print(f"  PDF: {result.download.get('path')} ({size_kb:.0f} KB)")
 
-    if result.parsed:
-        pr = result.parsed
-        if pr.get("skipped"):
-            console.print(f"  [dim]Parse: skipped (already parsed)[/]")
-        elif pr.get("success"):
+    if result.extracted.get("success"):
+        method = result.extracted.get("extraction_method", "?")
+        if method == "grobid":
             console.print(
-                f"  Parse: {pr.get('sections', 0)} sections, "
-                f"{pr.get('references', 0)} refs, "
-                f"{pr.get('figures', 0)} figures"
+                f"  Parse (GROBID): {result.extracted.get('sections', 0)} sections, "
+                f"{result.extracted.get('references', 0)} refs"
             )
-            if pr.get("partial"):
-                console.print(f"  [yellow]Parse had errors: {pr.get('errors')}[/]")
+        else:
+            console.print(
+                f"  Text extracted: {result.extracted.get('pages', 0)} pages, "
+                f"{result.extracted.get('chars', 0):,} chars (PyPDF2)"
+            )
 
     if result.enriched:
-        console.print(f"  Enriched: citations={paper.citation_count}, code={'yes' if paper.has_code else 'no'}")
+        console.print(
+            f"  Enriched: citations={paper.citation_count}, "
+            f"code={'yes' if paper.has_code else 'no'}"
+        )
 
     console.print(f"  [dim]Completed in {result.duration:.1f}s[/dim]")
 
@@ -206,35 +192,23 @@ def process_paper(
 def process_batch(
     topic: str = typer.Argument(help="Search topic to discover and process"),
     top: int = typer.Option(5, "--top", "-n", help="Number of papers to process"),
-    no_download: bool = typer.Option(False, "--no-download"),
-    no_parse: bool = typer.Option(False, "--no-parse"),
-    no_enrich: bool = typer.Option(False, "--no-enrich"),
     force: bool = typer.Option(False, "--force"),
 ) -> None:
     """Discover papers on a topic and process them all."""
     from ml_platform.discovery.pipeline import DiscoveryPipeline
-    from ml_platform.processing.pipeline import ProcessingPipeline
+    from ml_platform.processing.processor import PaperProcessor
 
     console.print(f"\n[bold blue]🔄 Batch processing:[/] {topic} (top {top})\n")
 
-    # Step 1: Discover
     with console.status("[bold]Discovering papers..."):
         discovery = DiscoveryPipeline()
-        result = asyncio.run(discovery.search(query=topic, top_n=top))
+        discover_result = asyncio.run(discovery.search(query=topic, top_n=top))
 
-    console.print(f"  Found {result.total_found} papers, processing top {len(result.papers)}\n")
+    console.print(f"  Found {discover_result.total_found} papers, processing top {len(discover_result.papers)}\n")
 
-    # Step 2: Process
-    pipeline = ProcessingPipeline()
-    results = asyncio.run(pipeline.process_batch(
-        result.papers,
-        download=not no_download,
-        parse=not no_parse,
-        enrich=not no_enrich,
-        force=force,
-    ))
+    processor = PaperProcessor()
+    results = asyncio.run(processor.process_batch(discover_result.papers, force=force))
 
-    # Summary
     success = sum(1 for r in results if r.success)
     failed = sum(1 for r in results if not r.success)
     total_time = sum(r.duration for r in results)
@@ -254,8 +228,7 @@ def process_grobid_status() -> None:
 
     async def check():
         async with GrobidClient() as client:
-            healthy = await client.check_health()
-            return healthy
+            return await client.check_health()
 
     healthy = asyncio.run(check())
 
@@ -271,12 +244,99 @@ def process_grobid_status() -> None:
 
 @codegen_app.command("generate")
 def codegen_generate(
-    paper_id: str = typer.Argument(help="Paper ID"),
-    engine: str = typer.Option("papercoder", "--engine", "-e", help="Engine: papercoder, deepcode"),
+    paper_id: str = typer.Argument(help="Paper arXiv ID (e.g. 2312.00752)"),
+    mode: str = typer.Option("optimized", "--mode", "-m", help="Mode: optimized, comprehensive"),
+    provider: str = typer.Option("openai", "--provider", "-p", help="LLM provider: openai, anthropic, google"),
+    model: str = typer.Option("", "--model", help="Specific model name (e.g. gpt-4o, claude-sonnet-4-20250514)"),
+    output: str = typer.Option("", "--output", "-o", help="Output directory"),
 ) -> None:
-    """Generate code from a paper."""
-    console.print(f"[bold blue]⚙️ Generating code for:[/] {paper_id} (engine: {engine})")
-    console.print("[dim]Code generation will be implemented in Phase 3[/dim]")
+    """Generate code from a paper using DeepCode multi-agent pipeline."""
+    from ml_platform.codegen.deepcode_runner import DeepCodeConfig, DeepCodeRunner
+
+    console.print(f"\n[bold blue]⚙️ Generating code for:[/] {paper_id}")
+    console.print(f"  Mode: {mode} | Provider: {provider}")
+    if model:
+        console.print(f"  Model: {model}")
+
+    # First, ensure we have the PDF
+    from ml_platform.models import Paper, PaperSource
+    from ml_platform.processing.pdf_downloader import PDFDownloader
+
+    paper = Paper(
+        paper_id=f"arxiv_{paper_id}",
+        arxiv_id=paper_id,
+        title=paper_id,
+        source=PaperSource.ARXIV,
+        pdf_url=f"https://arxiv.org/pdf/{paper_id}",
+    )
+
+    # Download PDF if not cached
+    pdf_path = os.path.join("data", "pdfs", f"{paper_id}.pdf")
+    if not os.path.exists(pdf_path):
+        console.print("\n[dim]Downloading PDF...[/]")
+        async def dl():
+            async with PDFDownloader() as d:
+                return await d.download_paper(paper)
+        dl_result = asyncio.run(dl())
+        if not dl_result.success:
+            console.print(f"[red]PDF download failed: {dl_result.error}[/]")
+            raise typer.Exit(1)
+        pdf_path = str(dl_result.path) if dl_result.path else pdf_path
+
+    # Generate code
+    dc_config = DeepCodeConfig(
+        llm_provider=provider,
+        model_name=model or "gpt-4o",
+        output_base_dir=output or os.path.join("data", "codegen"),
+    )
+    runner = DeepCodeRunner(dc_config)
+
+    with console.status("[bold]Running DeepCode pipeline... (this may take several minutes)[/]"):
+        result = asyncio.run(runner.generate(
+            pdf_path,
+            paper_id=paper_id,
+            mode=mode,
+        ))
+
+    if result.success:
+        console.print(f"\n[bold green]✅ Code generation complete![/]")
+        console.print(f"  Output: {result.output_dir}")
+        console.print(f"  Files: {len(result.files_generated)}")
+        for f in result.files_generated[:15]:
+            console.print(f"    📄 {f}")
+        if len(result.files_generated) > 15:
+            console.print(f"    ... and {len(result.files_generated) - 15} more")
+        console.print(f"  Duration: {result.duration_seconds:.1f}s")
+    else:
+        console.print(f"\n[bold red]❌ Code generation failed:[/] {result.error}")
+
+
+@codegen_app.command("status")
+def codegen_status() -> None:
+    """Show codegen configuration and available providers."""
+    import os
+
+    console.print("\n[bold blue]⚙️ Code Generation Status[/]\n")
+
+    providers = {
+        "OpenAI": bool(os.environ.get("OPENAI_API_KEY")),
+        "Anthropic": bool(os.environ.get("ANTHROPIC_API_KEY")),
+        "Google": bool(os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")),
+    }
+
+    for name, configured in providers.items():
+        icon = "✅" if configured else "❌"
+        console.print(f"  {icon} {name}: {'configured' if configured else 'not configured'}")
+
+    # Check output dir
+    output_dir = os.path.join("data", "codegen")
+    if os.path.exists(output_dir):
+        count = sum(1 for _ in os.listdir(output_dir) if os.path.isdir(os.path.join(output_dir, _)))
+        console.print(f"\n  📁 Output: {output_dir} ({count} projects)")
+    else:
+        console.print(f"\n  📁 Output: {output_dir} (not yet created)")
+
+    console.print("\n  [dim]Usage: ml-research codegen generate 2312.00752 --mode optimized[/dim]")
 
 
 # ── Status command ─────────────────────────────────────────────────────────

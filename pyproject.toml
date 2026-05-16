@@ -12,6 +12,8 @@ dependencies = [
     "python-dotenv>=1.0",
     "apscheduler>=3.10",
     "defusedxml>=0.7.1",
+    "deepcode-hku>=1.2.0",
+    "pypdf2>=3.0.1",
 ]
 
 [project.optional-dependencies]
