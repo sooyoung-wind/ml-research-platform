@@ -24,9 +24,9 @@ class APIConfig:
     ARXIV_BASE_URL: str = "https://export.arxiv.org/api/query"
     ARXIV_RATE_LIMIT: float = 1.0  # generous, no auth needed
 
-    # PapersWithCode
-    PWC_BASE_URL: str = "https://paperswithcode.com/api/v1"
-    PWC_RATE_LIMIT: float = 1.0
+    # HuggingFace Papers (replaces defunct PapersWithCode)
+    HUGGINGFACE_PAPERS_BASE_URL: str = "https://huggingface.co"
+    HUGGINGFACE_PAPERS_RATE_LIMIT: float = 2.0  # no auth needed
 
     # OpenAlex
     OPENALEX_BASE_URL: str = "https://api.openalex.org"

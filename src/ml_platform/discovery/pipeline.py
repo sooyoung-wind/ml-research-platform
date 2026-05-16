@@ -4,12 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import time
-from datetime import datetime
 
 from ml_platform.config import config
 from ml_platform.db import PapersDB
 from ml_platform.discovery.arxiv_client import ArxivClient
-from ml_platform.discovery.paperswithcode_client import PapersWithCodeClient
+from ml_platform.discovery.huggingface_client import HuggingFacePapersClient
 from ml_platform.discovery.ranking import merge_and_dedup, rank_papers
 from ml_platform.discovery.semantic_scholar_client import SemanticScholarClient
 from ml_platform.models import DiscoverResult, Paper, PaperSource
@@ -22,7 +21,7 @@ class DiscoveryPipeline:
         self.db = PapersDB()
         self.arxiv = ArxivClient()
         self.s2 = SemanticScholarClient()
-        self.pwc = PapersWithCodeClient()
+        self.hf = HuggingFacePapersClient()
 
     async def search(
         self,
@@ -35,13 +34,13 @@ class DiscoveryPipeline:
         Args:
             query: Search query.
             top_n: Number of top papers to return.
-            sources: Sources to use. None = all. Options: 'arxiv', 'semantic_scholar', 'pwc'.
+            sources: Sources to use. None = all. Options: 'arxiv', 'semantic_scholar', 'huggingface'.
 
         Returns:
             DiscoverResult with ranked papers.
         """
         start = time.time()
-        sources = sources or ["arxiv", "semantic_scholar", "pwc"]
+        sources = sources or ["arxiv", "semantic_scholar", "huggingface"]
 
         # Fetch from all sources in parallel
         tasks = []
@@ -49,8 +48,8 @@ class DiscoveryPipeline:
             tasks.append(self._fetch_arxiv(query))
         if "semantic_scholar" in sources:
             tasks.append(self._fetch_s2(query))
-        if "pwc" in sources:
-            tasks.append(self._fetch_pwc(query))
+        if "huggingface" in sources:
+            tasks.append(self._fetch_hf(query))
 
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -64,7 +63,7 @@ class DiscoveryPipeline:
         # Merge and deduplicate
         merged = merge_and_dedup(paper_lists)
 
-        # Enrich with code availability from PWC
+        # Enrich with code availability from HuggingFace
         await self._enrich_code_availability(merged)
 
         # Rank
@@ -101,6 +100,11 @@ class DiscoveryPipeline:
 
         return results
 
+    async def trending(self, limit: int = 20) -> list[Paper]:
+        """Fetch today's trending papers from HuggingFace."""
+        async with self.hf:
+            return await self.hf.get_trending_papers(limit=limit)
+
     async def _fetch_arxiv(self, query: str) -> list[Paper]:
         """Fetch papers from arXiv."""
         async with self.arxiv:
@@ -111,16 +115,16 @@ class DiscoveryPipeline:
         async with self.s2:
             return await self.s2.search(query, limit=20)
 
-    async def _fetch_pwc(self, query: str) -> list[Paper]:
-        """Fetch papers from PapersWithCode."""
-        async with self.pwc:
-            return await self.pwc.search(query, limit=20)
+    async def _fetch_hf(self, query: str) -> list[Paper]:
+        """Fetch papers from HuggingFace."""
+        async with self.hf:
+            return await self.hf.search(query, limit=20)
 
     async def _enrich_code_availability(self, papers: list[Paper]) -> None:
-        """Check PapersWithCode for existing code implementations."""
-        async with self.pwc:
+        """Check HuggingFace for existing code implementations."""
+        async with self.hf:
             for paper in papers:
                 if paper.arxiv_id and not paper.code_url:
-                    result = await self.pwc.check_code_available(paper.arxiv_id)
+                    result = await self.hf.check_code_available(paper.arxiv_id)
                     if result.get("has_code"):
                         paper.code_url = result.get("code_url")

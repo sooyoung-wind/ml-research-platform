@@ -13,7 +13,8 @@ class PaperSource(str, Enum):
 
     ARXIV = "arxiv"
     SEMANTIC_SCHOLAR = "semantic_scholar"
-    PAPERSWITHCODE = "paperswithcode"
+    HUGGINGFACE = "huggingface"
+    PAPERSWITHCODE = "paperswithcode"  # deprecated, redirects to HuggingFace
     OPENALEX = "openalex"
     MANUAL = "manual"
 
@@ -59,6 +60,7 @@ class Paper(BaseModel):
     citation_count: int | None = None
     relevance_score: float | None = None
     influence_score: float | None = None
+    upvotes: int = 0  # HuggingFace upvotes
 
     # Links
     arxiv_id: str | None = None

@@ -35,7 +35,7 @@ console = Console()
 def discover_search(
     topic: str = typer.Argument(help="Search topic"),
     top: int = typer.Option(10, "--top", "-n", help="Number of results"),
-    source: str = typer.Option("all", "--source", "-s", help="Source: all, arxiv, semantic_scholar, pwc"),
+    source: str = typer.Option("all", "--source", "-s", help="Source: all, arxiv, semantic_scholar, huggingface"),
 ) -> None:
     """Search for papers on a topic across multiple sources."""
     from ml_platform.discovery.pipeline import DiscoveryPipeline
@@ -98,6 +98,35 @@ def discover_daily(
         )
 
     console.print(f"\n[bold green]Total: {total_papers} papers across {len(results)} topics[/]")
+
+
+@discover_app.command("trending")
+def discover_trending(
+    limit: int = typer.Option(20, "--limit", "-n", help="Number of trending papers"),
+) -> None:
+    """Show today's trending papers from HuggingFace."""
+    from ml_platform.discovery.pipeline import DiscoveryPipeline
+
+    console.print("\n[bold blue]🔥 HuggingFace Trending Papers[/]\n")
+
+    pipeline = DiscoveryPipeline()
+    papers = asyncio.run(pipeline.trending(limit=limit))
+
+    table = Table(show_header=True, header_style="bold magenta")
+    table.add_column("#", style="dim", width=3)
+    table.add_column("Upvotes", width=8, justify="right")
+    table.add_column("Title", min_width=40, max_width=60)
+    table.add_column("Code", width=5, justify="center")
+    table.add_column("Stars", width=6, justify="right")
+
+    for i, paper in enumerate(papers, 1):
+        title = paper.title[:58] + ".." if len(paper.title) > 58 else paper.title
+        code = "✅" if paper.code_url else "—"
+        stars = "-"  # trending doesn't include stars directly
+        table.add_row(str(i), str(paper.upvotes), title, code, stars)
+
+    console.print(table)
+    console.print(f"\n[dim]Showing {len(papers)} trending papers from HuggingFace[/dim]")
 
 
 # ── Process commands ───────────────────────────────────────────────────────
