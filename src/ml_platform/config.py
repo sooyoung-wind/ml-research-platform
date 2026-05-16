@@ -43,6 +43,11 @@ class APIConfig:
     # Unpaywall
     UNPAYWALL_EMAIL: str = os.getenv("UNPAYWALL_EMAIL", "")
 
+    # GROBID (PDF parsing)
+    GROBID_BASE_URL: str = os.getenv("GROBID_BASE_URL", "http://localhost:8070")
+    GROBID_RATE_LIMIT: float = 1.0  # requests per second
+    GROBID_TIMEOUT: float = 120.0  # PDF processing can be slow
+
     # OpenAI (code generation)
     OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
     OPENAI_MODEL: str = os.getenv("OPENAI_MODEL", "o3-mini")

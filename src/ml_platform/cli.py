@@ -134,11 +134,136 @@ def discover_trending(
 
 @process_app.command("paper")
 def process_paper(
-    paper_id: str = typer.Argument(help="Paper ID (arXiv ID, DOI, etc.)"),
+    paper_id: str = typer.Argument(help="Paper arXiv ID (e.g. 2312.00752)"),
+    no_download: bool = typer.Option(False, "--no-download", help="Skip PDF download"),
+    no_parse: bool = typer.Option(False, "--no-parse", help="Skip GROBID parsing"),
+    no_enrich: bool = typer.Option(False, "--no-enrich", help="Skip metadata enrichment"),
+    force: bool = typer.Option(False, "--force", help="Re-process even if already done"),
 ) -> None:
-    """Process a paper: download PDF, parse, enrich metadata."""
-    console.print(f"[bold blue]📄 Processing paper:[/] {paper_id}")
-    console.print("[dim]Paper processing pipeline will be implemented in Phase 2[/dim]")
+    """Process a paper: download PDF, parse with GROBID, enrich metadata."""
+    import time as _time
+    from ml_platform.models import Paper, PaperSource
+
+    console.print(f"\n[bold blue]📄 Processing paper:[/] {paper_id}\n")
+
+    # Create a Paper object from the ID
+    paper = Paper(
+        paper_id=f"arxiv_{paper_id}",
+        arxiv_id=paper_id,
+        title=paper_id,  # will be filled by enrichment
+        source=PaperSource.ARXIV,
+        pdf_url=f"https://arxiv.org/pdf/{paper_id}",
+    )
+
+    from ml_platform.processing.pipeline import ProcessingPipeline
+    pipeline = ProcessingPipeline()
+
+    start = _time.time()
+    result = asyncio.run(pipeline.process_paper(
+        paper,
+        download=not no_download,
+        parse=not no_parse,
+        enrich=not no_enrich,
+        force=force,
+    ))
+
+    # Display result
+    if result.success:
+        console.print("[bold green]✅ Processing complete![/]")
+    else:
+        console.print(f"[bold red]❌ Processing failed:[/] {result.error}")
+
+    if result.download:
+        dl = result.download
+        if dl.get("skipped"):
+            console.print(f"  [dim]PDF: skipped (already downloaded)[/]")
+        elif dl.get("success"):
+            size_kb = (dl.get("size_bytes", 0) or 0) / 1024
+            console.print(f"  PDF: {dl.get('path')} ({size_kb:.0f} KB)")
+        else:
+            console.print(f"  [red]PDF download failed: {dl.get('error')}[/]")
+
+    if result.parsed:
+        pr = result.parsed
+        if pr.get("skipped"):
+            console.print(f"  [dim]Parse: skipped (already parsed)[/]")
+        elif pr.get("success"):
+            console.print(
+                f"  Parse: {pr.get('sections', 0)} sections, "
+                f"{pr.get('references', 0)} refs, "
+                f"{pr.get('figures', 0)} figures"
+            )
+            if pr.get("partial"):
+                console.print(f"  [yellow]Parse had errors: {pr.get('errors')}[/]")
+
+    if result.enriched:
+        console.print(f"  Enriched: citations={paper.citation_count}, code={'yes' if paper.has_code else 'no'}")
+
+    console.print(f"  [dim]Completed in {result.duration:.1f}s[/dim]")
+
+
+@process_app.command("batch")
+def process_batch(
+    topic: str = typer.Argument(help="Search topic to discover and process"),
+    top: int = typer.Option(5, "--top", "-n", help="Number of papers to process"),
+    no_download: bool = typer.Option(False, "--no-download"),
+    no_parse: bool = typer.Option(False, "--no-parse"),
+    no_enrich: bool = typer.Option(False, "--no-enrich"),
+    force: bool = typer.Option(False, "--force"),
+) -> None:
+    """Discover papers on a topic and process them all."""
+    from ml_platform.discovery.pipeline import DiscoveryPipeline
+    from ml_platform.processing.pipeline import ProcessingPipeline
+
+    console.print(f"\n[bold blue]🔄 Batch processing:[/] {topic} (top {top})\n")
+
+    # Step 1: Discover
+    with console.status("[bold]Discovering papers..."):
+        discovery = DiscoveryPipeline()
+        result = asyncio.run(discovery.search(query=topic, top_n=top))
+
+    console.print(f"  Found {result.total_found} papers, processing top {len(result.papers)}\n")
+
+    # Step 2: Process
+    pipeline = ProcessingPipeline()
+    results = asyncio.run(pipeline.process_batch(
+        result.papers,
+        download=not no_download,
+        parse=not no_parse,
+        enrich=not no_enrich,
+        force=force,
+    ))
+
+    # Summary
+    success = sum(1 for r in results if r.success)
+    failed = sum(1 for r in results if not r.success)
+    total_time = sum(r.duration for r in results)
+
+    console.print(f"\n[bold]Results:[/] {success} success, {failed} failed ({total_time:.1f}s total)")
+    for r in results:
+        icon = "✅" if r.success else "❌"
+        console.print(f"  {icon} {r.paper_id} ({r.duration:.1f}s)")
+
+
+@process_app.command("grobid")
+def process_grobid_status() -> None:
+    """Check GROBID service status."""
+    from ml_platform.processing.grobid_client import GrobidClient
+
+    console.print("\n[bold blue]🔧 GROBID Service Status[/]\n")
+
+    async def check():
+        async with GrobidClient() as client:
+            healthy = await client.check_health()
+            return healthy
+
+    healthy = asyncio.run(check())
+
+    if healthy:
+        console.print("[bold green]✅ GROBID is running[/] (http://localhost:8070)")
+    else:
+        console.print("[bold red]❌ GROBID is not responding[/]")
+        console.print("[dim]Start with: docker run -d --name grobid --rm -p 8070:8070 lfoppiano/grobid:0.8.1[/dim]")
 
 
 # ── Codegen commands ───────────────────────────────────────────────────────
