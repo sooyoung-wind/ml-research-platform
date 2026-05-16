@@ -1,11 +1,47 @@
-"""ML Research Platform — Paper ranking system."""
+"""ML Research Platform — Paper ranking system.
+
+Provides composite scoring and ranking of discovered papers based on
+citation count, relevance, freshness, and code availability.
+"""
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+import math
+from datetime import datetime
 
 from ml_platform.config import config
 from ml_platform.models import Paper
+
+
+_SIMPLE_MERGE_FIELDS = (
+    "abstract",
+    "citation_count",
+    "relevance_score",
+    "code_url",
+    "pdf_url",
+    "doi",
+)
+
+
+def _merge_paper_fields(existing: Paper, new: Paper) -> None:
+    """Merge fields from a new paper into an existing paper in-place.
+
+    Fills in missing simple fields, keeps longer author/keyword lists,
+    and merges categories.
+
+    Args:
+        existing: The paper to update.
+        new: The paper with potentially richer data.
+    """
+    for field in _SIMPLE_MERGE_FIELDS:
+        if not getattr(existing, field) and getattr(new, field):
+            setattr(existing, field, getattr(new, field))
+    if new.authors and len(new.authors) > len(existing.authors):
+        existing.authors = new.authors
+    if new.keywords and len(new.keywords) > len(existing.keywords):
+        existing.keywords = new.keywords
+    all_cats = list(set(existing.categories + new.categories))
+    existing.categories = all_cats
 
 
 def compute_composite_score(
@@ -15,7 +51,8 @@ def compute_composite_score(
 ) -> float:
     """Compute a composite score for a paper based on configured weights.
 
-    Score = w1 * citation_norm + w2 * relevance_norm + w3 * freshness_norm + w4 * no_code_bonus
+    Score = w1 * citation_norm + w2 * relevance_norm
+            + w3 * freshness_norm + w4 * no_code_bonus
 
     Args:
         paper: Paper to score.
@@ -29,7 +66,6 @@ def compute_composite_score(
 
     # Citation score (0-1, log-scaled)
     cit = paper.citation_count or 0
-    import math
     citation_score = min(math.log1p(cit) / math.log1p(max_citations), 1.0) if cit > 0 else 0.0
 
     # Relevance score (already 0-1 from Semantic Scholar)
@@ -62,7 +98,7 @@ def rank_papers(papers: list[Paper], top_n: int | None = None) -> list[Paper]:
 
     Args:
         papers: List of papers to rank.
-        top_n: Return only top N papers. None = return all.
+        top_n: Return only top N papers. None means return all.
 
     Returns:
         Papers sorted by composite_score descending.
@@ -81,13 +117,13 @@ def rank_papers(papers: list[Paper], top_n: int | None = None) -> list[Paper]:
 def merge_and_dedup(paper_lists: list[list[Paper]]) -> list[Paper]:
     """Merge papers from multiple sources, deduplicating by arXiv ID.
 
-    When duplicates are found, merge metadata (keep richer data).
+    When duplicates are found, metadata is merged (keeping richer data).
 
     Args:
         paper_lists: Lists of papers from different sources.
 
     Returns:
-        Deduplicated list.
+        Deduplicated list of papers.
     """
     seen: dict[str, Paper] = {}
 
@@ -97,27 +133,7 @@ def merge_and_dedup(paper_lists: list[list[Paper]]) -> list[Paper]:
             key = paper.arxiv_id or f"{paper.source.value}:{paper.paper_id}"
 
             if key in seen:
-                existing = seen[key]
-                # Merge: fill in missing fields from the new paper
-                if not existing.abstract and paper.abstract:
-                    existing.abstract = paper.abstract
-                if not existing.citation_count and paper.citation_count:
-                    existing.citation_count = paper.citation_count
-                if not existing.relevance_score and paper.relevance_score:
-                    existing.relevance_score = paper.relevance_score
-                if not existing.code_url and paper.code_url:
-                    existing.code_url = paper.code_url
-                if not existing.pdf_url and paper.pdf_url:
-                    existing.pdf_url = paper.pdf_url
-                if not existing.doi and paper.doi:
-                    existing.doi = paper.doi
-                if paper.authors and len(paper.authors) > len(existing.authors):
-                    existing.authors = paper.authors
-                if paper.keywords and len(paper.keywords) > len(existing.keywords):
-                    existing.keywords = paper.keywords
-                # Merge categories
-                all_cats = list(set(existing.categories + paper.categories))
-                existing.categories = all_cats
+                _merge_paper_fields(seen[key], paper)
             else:
                 seen[key] = paper
 

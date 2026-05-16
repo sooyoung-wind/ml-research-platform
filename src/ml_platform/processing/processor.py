@@ -11,8 +11,8 @@ Pipeline:
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass, field
-from typing import Optional
 
 from ml_platform.models import Paper
 
@@ -21,7 +21,17 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class ProcessingResult:
-    """Result of processing a single paper."""
+    """Result of processing a single paper.
+
+    Attributes:
+        paper_id: Identifier of the processed paper.
+        success: Whether processing completed successfully.
+        error: Error message if processing failed.
+        download: Download stage result dictionary.
+        extracted: Text extraction result dictionary.
+        enriched: Whether metadata enrichment succeeded.
+        duration: Total processing duration in seconds.
+    """
 
     paper_id: str = ""
     success: bool = False
@@ -38,6 +48,10 @@ class PaperProcessor:
     No longer requires GROBID by default. Uses PyPDF2 for text extraction,
     matching DeepCode's approach. GROBID remains available as an optional
     advanced parser.
+
+    Attributes:
+        use_grobid: Whether to use GROBID for structured parsing.
+        enrich_metadata: Whether to enrich papers with external metadata.
     """
 
     def __init__(
@@ -46,6 +60,14 @@ class PaperProcessor:
         use_grobid: bool = False,
         enrich_metadata: bool = True,
     ) -> None:
+        """Initialize the PaperProcessor.
+
+        Args:
+            use_grobid: If True, use GROBID for structured PDF parsing
+                instead of PyPDF2.
+            enrich_metadata: If True, enrich papers with metadata from
+                external sources (S2, HuggingFace).
+        """
         self.use_grobid = use_grobid
         self.enrich_metadata = enrich_metadata
 
@@ -58,7 +80,18 @@ class PaperProcessor:
         enrich: bool = True,
         force: bool = False,
     ) -> ProcessingResult:
-        """Process a single paper through the pipeline."""
+        """Process a single paper through the pipeline.
+
+        Args:
+            paper: The Paper object to process.
+            download: Whether to download the PDF.
+            extract: Whether to extract text from the PDF.
+            enrich: Whether to enrich with external metadata.
+            force: If True, re-download and re-process even if cached.
+
+        Returns:
+            A ProcessingResult with details of each processing stage.
+        """
         import asyncio
         import time
 
@@ -102,7 +135,19 @@ class PaperProcessor:
         force: bool = False,
         max_concurrent: int = 3,
     ) -> list[ProcessingResult]:
-        """Process multiple papers with concurrency control."""
+        """Process multiple papers with concurrency control.
+
+        Args:
+            papers: List of Paper objects to process.
+            download: Whether to download PDFs.
+            extract: Whether to extract text.
+            enrich: Whether to enrich with metadata.
+            force: If True, re-process even if already done.
+            max_concurrent: Maximum number of concurrent processing tasks.
+
+        Returns:
+            List of ProcessingResult objects, one per paper.
+        """
         import asyncio
 
         semaphore = asyncio.Semaphore(max_concurrent)
@@ -131,7 +176,15 @@ class PaperProcessor:
     # ── Internal methods ──────────────────────────────────────────────────
 
     async def _download_pdf(self, paper: Paper, *, force: bool = False) -> dict:
-        """Download PDF for a paper."""
+        """Download PDF for a paper.
+
+        Args:
+            paper: The Paper to download.
+            force: If True, re-download even if file exists.
+
+        Returns:
+            A dictionary with download status and file information.
+        """
         from ml_platform.processing.pdf_downloader import PDFDownloader
 
         async with PDFDownloader() as downloader:
@@ -147,7 +200,15 @@ class PaperProcessor:
         return {"success": False, "error": result.error}
 
     def _extract_text(self, paper: Paper) -> dict:
-        """Extract text from PDF using PyPDF2 (fast, no GROBID needed)."""
+        """Extract text from PDF using PyPDF2 (fast, no GROBID needed).
+
+        Args:
+            paper: The Paper with a local_pdf_path set.
+
+        Returns:
+            A dictionary with extraction status, page count, and character
+            count.
+        """
         from PyPDF2 import PdfReader
 
         if not paper.local_pdf_path or not os.path.exists(paper.local_pdf_path):
@@ -181,7 +242,15 @@ class PaperProcessor:
             return {"success": False, "error": str(e)}
 
     async def _extract_grobid(self, paper: Paper) -> dict:
-        """Extract structured content using GROBID (optional, more detailed)."""
+        """Extract structured content using GROBID (optional, more detailed).
+
+        Args:
+            paper: The Paper with a local_pdf_path set.
+
+        Returns:
+            A dictionary with structured extraction results including
+            sections, references, figures, and keywords counts.
+        """
         from ml_platform.processing.grobid_client import GrobidClient
         from ml_platform.processing.tei_parser import parse_tei_xml, update_paper
 
@@ -213,7 +282,14 @@ class PaperProcessor:
         }
 
     async def _enrich(self, paper: Paper) -> bool:
-        """Enrich paper with metadata from S2 and HuggingFace."""
+        """Enrich paper with metadata from S2 and HuggingFace.
+
+        Args:
+            paper: The Paper to enrich.
+
+        Returns:
+            True if enrichment succeeded, False otherwise.
+        """
         try:
             from ml_platform.processing.enricher import MetadataEnricher
 
@@ -223,6 +299,3 @@ class PaperProcessor:
         except Exception as e:
             logger.warning(f"Enrichment failed for {paper.paper_id}: {e}")
             return False
-
-
-import os  # noqa: E402 — needed for _extract_text

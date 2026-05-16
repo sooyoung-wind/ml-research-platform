@@ -37,7 +37,22 @@ NOTION_VERSION = "2022-06-28"
 
 @dataclass
 class PaperReport:
-    """Aggregated report for a single paper across all pipeline stages."""
+    """Aggregated report for a single paper across all pipeline stages.
+
+    Attributes:
+        paper: The paper entity.
+        processing_success: Whether text processing succeeded.
+        processing_duration: Processing stage duration in seconds.
+        processing_error: Error message if processing failed.
+        codegen_success: Whether code generation succeeded.
+        codegen_files: List of generated code file paths.
+        codegen_output_dir: Directory containing generated code.
+        codegen_repo_url: URL of the GitHub repository with generated code.
+        codegen_duration: Code generation duration in seconds.
+        codegen_error: Error message if code generation failed.
+        notion_page_url: URL of the created Notion page.
+        notion_page_id: ID of the created Notion page.
+    """
 
     paper: Paper
     processing_success: bool = False
@@ -56,12 +71,29 @@ class PaperReport:
 
     @property
     def total_duration(self) -> float:
+        """Total time across processing and codegen stages."""
         return self.processing_duration + self.codegen_duration
 
 
 @dataclass
 class PipelineRunSummary:
-    """Summary of an entire pipeline run (discovery → processing → codegen)."""
+    """Summary of an entire pipeline run (discovery → processing → codegen).
+
+    Attributes:
+        run_id: Unique identifier for this run.
+        started_at: Timestamp when the run started.
+        finished_at: Timestamp when the run finished.
+        discovery_queries: Search queries used for discovery.
+        total_papers_discovered: Total number of papers found.
+        discovery_duration: Discovery stage duration in seconds.
+        papers_processed: Number of papers successfully processed.
+        papers_failed: Number of papers that failed processing.
+        processing_duration: Processing stage duration in seconds.
+        codegen_attempts: Number of code generation attempts.
+        codegen_successes: Number of successful code generations.
+        codegen_duration: Code generation stage duration in seconds.
+        reports: Per-paper report details.
+    """
 
     run_id: str = ""
     started_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
@@ -87,10 +119,12 @@ class PipelineRunSummary:
 
     @property
     def total_duration(self) -> float:
+        """Total wall-clock time across all stages."""
         return self.discovery_duration + self.processing_duration + self.codegen_duration
 
     @property
     def success_rate(self) -> float:
+        """Fraction of papers that were successfully processed."""
         total = self.papers_processed + self.papers_failed
         if total == 0:
             return 0.0
@@ -107,6 +141,10 @@ class NotionReporter:
       - Citation count, code availability
       - Code generation results (files, repo URL)
       - Processing duration
+
+    Attributes:
+        api_key: Notion API key used for authentication.
+        parent_page_id: ID of the parent Notion page.
     """
 
     def __init__(
@@ -114,11 +152,24 @@ class NotionReporter:
         api_key: str | None = None,
         parent_page_id: str | None = None,
     ) -> None:
+        """Initialize the Notion reporter.
+
+        Args:
+            api_key: Notion API key. Defaults to the ``NOTION_API_KEY``
+                environment variable.
+            parent_page_id: Notion parent page ID. Defaults to the
+                ``NOTION_PARENT_PAGE_ID`` environment variable.
+        """
         self.api_key = api_key or NOTION_API_KEY
         self.parent_page_id = parent_page_id or NOTION_PARENT_PAGE_ID
         self._client: httpx.AsyncClient | None = None
 
     async def __aenter__(self) -> NotionReporter:
+        """Enter the async context and create the HTTP client.
+
+        Returns:
+            The ``NotionReporter`` instance with an active HTTP client.
+        """
         self._client = httpx.AsyncClient(
             base_url=NOTION_BASE_URL,
             headers={
@@ -130,12 +181,33 @@ class NotionReporter:
         )
         return self
 
-    async def __aexit__(self, *exc: Any) -> None:
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: Any,
+    ) -> None:
+        """Exit the async context and close the HTTP client.
+
+        Args:
+            exc_type: Exception type, or None.
+            exc_val: Exception value, or None.
+            exc_tb: Traceback object, or None.
+        """
         if self._client:
             await self._client.aclose()
             self._client = None
 
     def _ensure_client(self) -> httpx.AsyncClient:
+        """Return the active HTTP client.
+
+        Returns:
+            The initialised ``httpx.AsyncClient``.
+
+        Raises:
+            RuntimeError: If the reporter is not used as an async context
+                manager.
+        """
         if self._client is None:
             raise RuntimeError("NotionReporter must be used as async context manager")
         return self._client
@@ -149,7 +221,10 @@ class NotionReporter:
             report: Aggregated paper report with processing & codegen results.
 
         Returns:
-            Notion API response dict (contains 'id' and 'url').
+            Notion API response dict (contains ``'id'`` and ``'url'``).
+
+        Raises:
+            httpx.HTTPStatusError: If the Notion API returns an error.
         """
         client = self._ensure_client()
         paper = report.paper
@@ -192,6 +267,9 @@ class NotionReporter:
 
         Returns:
             Notion API response dict.
+
+        Raises:
+            httpx.HTTPStatusError: If the Notion API returns an error.
         """
         client = self._ensure_client()
         children = self._build_summary_children(summary)
@@ -220,18 +298,38 @@ class NotionReporter:
     # ── Block builders ─────────────────────────────────────────────────────
 
     def _build_page_children(self, report: PaperReport) -> list[dict]:
-        """Build Notion block children for a paper page."""
+        """Build Notion block children for a paper page.
+
+        Args:
+            report: The paper report to render.
+
+        Returns:
+            A list of Notion block dicts.
+        """
+        blocks: list[dict] = []
+        blocks.extend(self._build_metadata_section(report))
+        blocks.extend(self._build_metrics_section(report))
+        blocks.extend(self._build_processing_section(report))
+        blocks.extend(self._build_codegen_section(report))
+        blocks.extend(self._build_footer_section(report))
+        return blocks
+
+    def _build_metadata_section(self, report: PaperReport) -> list[dict]:
+        """Build Notion blocks for the paper metadata section.
+
+        Args:
+            report: The paper report containing paper metadata.
+
+        Returns:
+            A list of Notion block dicts for the metadata section.
+        """
         paper = report.paper
         blocks: list[dict] = []
-
-        # ── Metadata section ───────────────────────────────────────────
         blocks.append(self._heading2("Paper Metadata"))
 
-        # Authors
         author_names = ", ".join(a.name for a in paper.authors) or "Unknown"
         blocks.append(self._paragraph(f"**Authors:** {author_names}"))
 
-        # arXiv link
         if paper.arxiv_id:
             blocks.append(
                 self._paragraph(
@@ -240,11 +338,9 @@ class NotionReporter:
                 )
             )
 
-        # DOI
         if paper.doi:
             blocks.append(self._paragraph(f"**DOI:** {paper.doi}"))
 
-        # Published date
         if paper.published_date:
             blocks.append(
                 self._paragraph(
@@ -252,15 +348,25 @@ class NotionReporter:
                 )
             )
 
-        # Source & categories
         blocks.append(
             self._paragraph(
                 f"**Source:** {paper.source.value}  |  "
                 f"**Categories:** {', '.join(paper.categories) or 'N/A'}"
             )
         )
+        return blocks
 
-        # ── Metrics ────────────────────────────────────────────────────
+    def _build_metrics_section(self, report: PaperReport) -> list[dict]:
+        """Build Notion blocks for the metrics section.
+
+        Args:
+            report: The paper report containing paper metrics.
+
+        Returns:
+            A list of Notion block dicts for the metrics section.
+        """
+        paper = report.paper
+        blocks: list[dict] = []
         blocks.append(self._heading2("Metrics"))
 
         citations = str(paper.citation_count) if paper.citation_count is not None else "N/A"
@@ -275,8 +381,19 @@ class NotionReporter:
 
         if paper.upvotes:
             blocks.append(self._paragraph(f"**HuggingFace Upvotes:** {paper.upvotes}"))
+        return blocks
 
-        # ── Processing result ──────────────────────────────────────────
+    def _build_processing_section(self, report: PaperReport) -> list[dict]:
+        """Build Notion blocks for the processing result section.
+
+        Args:
+            report: The paper report containing processing results.
+
+        Returns:
+            A list of Notion block dicts for the processing section.
+        """
+        paper = report.paper
+        blocks: list[dict] = []
         blocks.append(self._heading2("Processing"))
 
         status_icon = "SUCCESS" if report.processing_success else "FAILED"
@@ -291,38 +408,24 @@ class NotionReporter:
         if paper.abstract:
             abstract_preview = paper.abstract[:500] + ("..." if len(paper.abstract) > 500 else "")
             blocks.append(self._paragraph(f"**Abstract:** {abstract_preview}"))
+        return blocks
 
-        # ── Code generation result ────────────────────────────────────
+    def _build_codegen_section(self, report: PaperReport) -> list[dict]:
+        """Build Notion blocks for the code generation result section.
+
+        Args:
+            report: The paper report containing codegen results.
+
+        Returns:
+            A list of Notion block dicts for the codegen section.
+        """
+        blocks: list[dict] = []
         blocks.append(self._heading2("Code Generation"))
 
         if report.codegen_success:
-            blocks.append(self._paragraph("**Status:** SUCCESS"))
-            blocks.append(
-                self._paragraph(f"**Files generated:** {len(report.codegen_files)}")
-            )
-            if report.codegen_output_dir:
-                blocks.append(
-                    self._paragraph(f"**Output directory:** `{report.codegen_output_dir}`")
-                )
-            if report.codegen_repo_url:
-                blocks.append(
-                    self._paragraph(
-                        f"**Repo URL:** [{report.codegen_repo_url}]"
-                        f"({report.codegen_repo_url})"
-                    )
-                )
-            # File list
-            if report.codegen_files:
-                file_lines = "\n".join(f"  - `{f}`" for f in report.codegen_files[:30])
-                blocks.append(self._paragraph(f"**Generated files:**\n{file_lines}"))
-                if len(report.codegen_files) > 30:
-                    blocks.append(
-                        self._paragraph(
-                            f"  ... and {len(report.codegen_files) - 30} more files"
-                        )
-                    )
+            blocks.extend(self._build_codegen_success_blocks(report))
         elif report.codegen_error:
-            blocks.append(self._paragraph(f"**Status:** FAILED"))
+            blocks.append(self._paragraph("**Status:** FAILED"))
             blocks.append(self._paragraph(f"**Error:** {report.codegen_error}"))
         else:
             blocks.append(self._paragraph("**Status:** Not attempted"))
@@ -331,8 +434,54 @@ class NotionReporter:
             blocks.append(
                 self._paragraph(f"**Codegen duration:** {report.codegen_duration:.1f}s")
             )
+        return blocks
 
-        # ── Total time ────────────────────────────────────────────────
+    def _build_codegen_success_blocks(self, report: PaperReport) -> list[dict]:
+        """Build Notion blocks for a successful code generation result.
+
+        Args:
+            report: The paper report with successful codegen.
+
+        Returns:
+            A list of Notion block dicts for the success details.
+        """
+        blocks: list[dict] = []
+        blocks.append(self._paragraph("**Status:** SUCCESS"))
+        blocks.append(
+            self._paragraph(f"**Files generated:** {len(report.codegen_files)}")
+        )
+        if report.codegen_output_dir:
+            blocks.append(
+                self._paragraph(f"**Output directory:** `{report.codegen_output_dir}`")
+            )
+        if report.codegen_repo_url:
+            blocks.append(
+                self._paragraph(
+                    f"**Repo URL:** [{report.codegen_repo_url}]"
+                    f"({report.codegen_repo_url})"
+                )
+            )
+        if report.codegen_files:
+            file_lines = "\n".join(f"  - `{f}`" for f in report.codegen_files[:30])
+            blocks.append(self._paragraph(f"**Generated files:**\n{file_lines}"))
+            if len(report.codegen_files) > 30:
+                blocks.append(
+                    self._paragraph(
+                        f"  ... and {len(report.codegen_files) - 30} more files"
+                    )
+                )
+        return blocks
+
+    def _build_footer_section(self, report: PaperReport) -> list[dict]:
+        """Build Notion blocks for the page footer with timing.
+
+        Args:
+            report: The paper report with duration info.
+
+        Returns:
+            A list of Notion block dicts for the footer.
+        """
+        blocks: list[dict] = []
         blocks.append(self._divider())
         blocks.append(
             self._paragraph(
@@ -340,11 +489,17 @@ class NotionReporter:
                 f"Reported at: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}"
             )
         )
-
         return blocks
 
     def _build_summary_children(self, summary: PipelineRunSummary) -> list[dict]:
-        """Build Notion block children for a pipeline run summary page."""
+        """Build Notion block children for a pipeline run summary page.
+
+        Args:
+            summary: The pipeline run summary to render.
+
+        Returns:
+            A list of Notion block dicts.
+        """
         blocks: list[dict] = []
 
         # Header
@@ -434,6 +589,14 @@ class NotionReporter:
 
     @staticmethod
     def _heading1(text: str) -> dict:
+        """Create a Notion heading_1 block.
+
+        Args:
+            text: Heading text content.
+
+        Returns:
+            A Notion block dict.
+        """
         return {
             "object": "block",
             "type": "heading_1",
@@ -442,6 +605,14 @@ class NotionReporter:
 
     @staticmethod
     def _heading2(text: str) -> dict:
+        """Create a Notion heading_2 block.
+
+        Args:
+            text: Heading text content.
+
+        Returns:
+            A Notion block dict.
+        """
         return {
             "object": "block",
             "type": "heading_2",
@@ -450,7 +621,17 @@ class NotionReporter:
 
     @staticmethod
     def _paragraph(text: str) -> dict:
-        """Create a paragraph block. Notion rich_text content limit is 2000 chars."""
+        """Create a paragraph block.
+
+        Notion rich_text content limit is 2000 characters. Text exceeding
+        the limit is truncated to the first 2000 characters.
+
+        Args:
+            text: Paragraph text content.
+
+        Returns:
+            A Notion paragraph block dict.
+        """
         # Chunk if needed
         if len(text) <= 2000:
             return {
@@ -473,55 +654,86 @@ class NotionReporter:
 
     @staticmethod
     def _divider() -> dict:
+        """Create a Notion divider block.
+
+        Returns:
+            A Notion divider block dict.
+        """
         return {"object": "block", "type": "divider", "divider": {}}
 
 
 # ── Discord / notification helpers ────────────────────────────────────────────
 
+def _discord_author_line(authors: list) -> str | None:
+    """Format an author list for Discord display.
+
+    Args:
+        authors: List of Author objects.
+
+    Returns:
+        Formatted author string, or None if no authors.
+    """
+    if not authors:
+        return None
+    author_str = ", ".join(a.name for a in authors[:5])
+    if len(authors) > 5:
+        author_str += f" +{len(authors) - 5} more"
+    return f"**Authors:** {author_str}"
+
+
+def _discord_codegen_line(report: PaperReport) -> str | None:
+    """Format the codegen status line for Discord.
+
+    Args:
+        report: Aggregated paper report.
+
+    Returns:
+        Formatted codegen line, or None if not applicable.
+    """
+    if report.codegen_success:
+        file_count = len(report.codegen_files)
+        repo_str = f" | **Repo:** {report.codegen_repo_url}" if report.codegen_repo_url else ""
+        return f"**Codegen:** {file_count} files generated ({report.codegen_duration:.0f}s){repo_str}"
+    if report.codegen_error:
+        return f"**Codegen:** Failed — {report.codegen_error[:100]}"
+    return None
+
+
 def format_discord_paper_message(report: PaperReport) -> str:
     """Format a concise Discord notification for a single paper result.
 
-    Returns a string suitable for Hermes send_message.
+    Args:
+        report: Aggregated paper report.
+
+    Returns:
+        A string suitable for Hermes ``send_message``.
     """
     paper = report.paper
     lines: list[str] = []
 
-    # Header
     icon = "SUCCESS" if report.processing_success else "FAILED"
     lines.append(f"**Paper Processed: {icon}**")
 
-    # Title (truncate for Discord)
     title = paper.title[:150] + ("..." if len(paper.title) > 150 else "")
     lines.append(f"**Title:** {title}")
 
-    # Authors
-    if paper.authors:
-        author_str = ", ".join(a.name for a in paper.authors[:5])
-        if len(paper.authors) > 5:
-            author_str += f" +{len(paper.authors) - 5} more"
-        lines.append(f"**Authors:** {author_str}")
+    author_line = _discord_author_line(paper.authors)
+    if author_line:
+        lines.append(author_line)
 
-    # Link
     if paper.arxiv_id:
         lines.append(f"**arXiv:** https://arxiv.org/abs/{paper.arxiv_id}")
 
-    # Metrics
     citations = str(paper.citation_count) if paper.citation_count is not None else "N/A"
     code = "Yes" if paper.has_code else "No"
     lines.append(f"**Citations:** {citations} | **Existing code:** {code}")
 
-    # Codegen
-    if report.codegen_success:
-        file_count = len(report.codegen_files)
-        repo_str = f" | **Repo:** {report.codegen_repo_url}" if report.codegen_repo_url else ""
-        lines.append(f"**Codegen:** {file_count} files generated ({report.codegen_duration:.0f}s){repo_str}")
-    elif report.codegen_error:
-        lines.append(f"**Codegen:** Failed — {report.codegen_error[:100]}")
+    codegen_line = _discord_codegen_line(report)
+    if codegen_line:
+        lines.append(codegen_line)
 
-    # Timing
     lines.append(f"**Total time:** {report.total_duration:.1f}s")
 
-    # Notion link
     if report.notion_page_url:
         lines.append(f"**Notion:** {report.notion_page_url}")
 
@@ -529,7 +741,14 @@ def format_discord_paper_message(report: PaperReport) -> str:
 
 
 def format_discord_summary_message(summary: PipelineRunSummary) -> str:
-    """Format a concise Discord notification for a full pipeline run summary."""
+    """Format a concise Discord notification for a full pipeline run summary.
+
+    Args:
+        summary: Aggregated pipeline run summary.
+
+    Returns:
+        A Discord-formatted summary string.
+    """
     lines: list[str] = []
 
     lines.append("**ML Research Pipeline — Run Summary**")
@@ -580,7 +799,7 @@ async def report_paper_to_notion(
 ) -> PaperReport:
     """Create a Notion page for a paper report and update the report with the URL.
 
-    This is a convenience wrapper around NotionReporter.create_paper_page().
+    This is a convenience wrapper around ``NotionReporter.create_paper_page()``.
 
     Args:
         report: Paper report to publish.
@@ -588,7 +807,7 @@ async def report_paper_to_notion(
         parent_page_id: Notion parent page ID.
 
     Returns:
-        The same PaperReport with notion_page_url populated.
+        The same ``PaperReport`` with ``notion_page_url`` populated.
     """
     async with NotionReporter(api_key=api_key, parent_page_id=parent_page_id) as reporter:
         await reporter.create_paper_page(report)
@@ -623,8 +842,8 @@ async def report_full_pipeline(
 ) -> PipelineRunSummary:
     """Run full reporting: Notion pages for each paper + summary page.
 
-    Also populates notion_page_url on each PaperReport so Discord notifications
-    can include the Notion link.
+    Also populates ``notion_page_url`` on each ``PaperReport`` so Discord
+    notifications can include the Notion link.
 
     Args:
         summary: Pipeline run summary with reports populated.
@@ -632,7 +851,7 @@ async def report_full_pipeline(
         notion_parent_page_id: Notion parent page ID.
 
     Returns:
-        The same summary with reports updated.
+        The same ``PipelineRunSummary`` with reports updated.
     """
     async with NotionReporter(
         api_key=notion_api_key, parent_page_id=notion_parent_page_id

@@ -10,6 +10,7 @@ import asyncio
 import logging
 import time
 from pathlib import Path
+from typing import Any
 
 from ml_platform.db import PapersDB
 from ml_platform.models import Paper, ProcessingStatus
@@ -21,10 +22,74 @@ from ml_platform.processing.tei_parser import parse_tei_xml, update_paper
 logger = logging.getLogger(__name__)
 
 
+class ProcessingResult:
+    """Result of processing a single paper.
+
+    Attributes:
+        paper_id: Identifier of the processed paper.
+        success: Whether processing completed successfully.
+        error: Error message if processing failed.
+        download: Download stage result dictionary.
+        parsed: GROBID parse stage result dictionary.
+        enriched: Whether metadata enrichment was applied.
+        stored: Whether the paper was stored to the database.
+        duration: Total processing duration in seconds.
+    """
+
+    def __init__(
+        self,
+        paper_id: str,
+        success: bool = False,
+        error: str | None = None,
+        download: dict | None = None,
+        parsed: dict | None = None,
+        enriched: bool = False,
+        stored: bool = False,
+        duration: float = 0.0,
+    ) -> None:
+        """Initialize a ProcessingResult.
+
+        Args:
+            paper_id: Identifier of the processed paper.
+            success: Whether processing completed successfully.
+            error: Error message if processing failed.
+            download: Download stage result dictionary.
+            parsed: GROBID parse stage result dictionary.
+            enriched: Whether metadata enrichment was applied.
+            stored: Whether the paper was stored to the database.
+            duration: Total processing duration in seconds.
+        """
+        self.paper_id = paper_id
+        self.success = success
+        self.error = error
+        self.download = download
+        self.parsed = parsed
+        self.enriched = enriched
+        self.stored = stored
+        self.duration = duration
+
+    def __repr__(self) -> str:
+        """Return a string representation of the result.
+
+        Returns:
+            A formatted string showing paper ID, status, and duration.
+        """
+        status = "OK" if self.success else f"FAIL({self.error})"
+        return f"ProcessingResult({self.paper_id}: {status}, {self.duration:.1f}s)"
+
+
 class ProcessingPipeline:
-    """Orchestrates paper processing: download, parse, enrich, store."""
+    """Orchestrates paper processing: download, parse, enrich, store.
+
+    Attributes:
+        db: PapersDB instance for storing papers.
+        downloader: PDFDownloader for downloading PDFs.
+        grobid: GrobidClient for GROBID parsing.
+        enricher: MetadataEnricher for external metadata.
+    """
 
     def __init__(self) -> None:
+        """Initialize the ProcessingPipeline with default components."""
         self.db = PapersDB()
         self.downloader = PDFDownloader()
         self.grobid = GrobidClient()
@@ -104,10 +169,14 @@ class ProcessingPipeline:
 
         Args:
             papers: List of papers to process.
+            download: Whether to download PDFs.
+            parse: Whether to parse with GROBID.
+            enrich: Whether to enrich with metadata.
+            force: Re-process even if already done.
             max_concurrent: Max parallel downloads/parses.
 
         Returns:
-            List of ProcessingResults.
+            List of ProcessingResult objects, one per paper.
         """
         semaphore = asyncio.Semaphore(max_concurrent)
         results: list[ProcessingResult] = []
@@ -148,7 +217,15 @@ class ProcessingPipeline:
     # --- Internal stages ---------------------------------------------------
 
     async def _download(self, paper: Paper, *, force: bool = False) -> dict:
-        """Download PDF for a paper."""
+        """Download PDF for a paper.
+
+        Args:
+            paper: The Paper to download.
+            force: If True, re-download even if file exists.
+
+        Returns:
+            A dictionary with download status, path, size, and optional error.
+        """
         async with self.downloader:
             result = await self.downloader.download_paper(paper, force=force)
 
@@ -165,7 +242,16 @@ class ProcessingPipeline:
         }
 
     async def _parse(self, paper: Paper, *, force: bool = False) -> dict:
-        """Parse a paper's PDF with GROBID and extract structured content."""
+        """Parse a paper's PDF with GROBID and extract structured content.
+
+        Args:
+            paper: The Paper with a local_pdf_path set.
+            force: If True, re-parse even if already parsed.
+
+        Returns:
+            A dictionary with parse status, section/reference/figure counts,
+            and any errors.
+        """
         pdf_path = Path(paper.local_pdf_path) if paper.local_pdf_path else None
         if not pdf_path or not pdf_path.exists():
             return {"success": False, "error": "PDF file not found"}
@@ -196,31 +282,3 @@ class ProcessingPipeline:
             "partial": parse_result.partial,
             "errors": parse_result.parse_errors,
         }
-
-
-class ProcessingResult:
-    """Result of processing a single paper."""
-
-    def __init__(
-        self,
-        paper_id: str,
-        success: bool = False,
-        error: str | None = None,
-        download: dict | None = None,
-        parsed: dict | None = None,
-        enriched: bool = False,
-        stored: bool = False,
-        duration: float = 0.0,
-    ) -> None:
-        self.paper_id = paper_id
-        self.success = success
-        self.error = error
-        self.download = download
-        self.parsed = parsed
-        self.enriched = enriched
-        self.stored = stored
-        self.duration = duration
-
-    def __repr__(self) -> str:
-        status = "OK" if self.success else f"FAIL({self.error})"
-        return f"ProcessingResult({self.paper_id}: {status}, {self.duration:.1f}s)"

@@ -1,9 +1,14 @@
-"""Semantic Scholar Graph API v1 client."""
+"""ML Research Platform — Semantic Scholar Graph API v1 client.
+
+Async client for paper search, retrieval, citation lookup, and
+metadata enrichment via the Semantic Scholar API.
+"""
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import types
 from typing import Any
 
 import httpx
@@ -23,10 +28,18 @@ class SemanticScholarClient:
     """Async client for the Semantic Scholar Graph API v1.
 
     Features:
-    - Paper search, retrieval, and citation lookup
-    - Transparent rate-limiting (async sleep between requests)
-    - Optional API-key authentication via ``x-api-key`` header
-    - Graceful error handling (404, 429, network)
+        - Paper search, retrieval, and citation lookup
+        - Transparent rate-limiting (async sleep between requests)
+        - Optional API-key authentication via ``x-api-key`` header
+        - Graceful error handling (404, 429, network)
+
+    Attributes:
+        _config: API configuration instance.
+        _base_url: Semantic Scholar API base URL.
+        _rate_limit: Requests per second.
+        _owns_client: Whether this instance owns the httpx client.
+        _client: Underlying httpx async client.
+        _headers: Default HTTP headers for requests.
     """
 
     def __init__(
@@ -34,6 +47,13 @@ class SemanticScholarClient:
         config: APIConfig | None = None,
         client: httpx.AsyncClient | None = None,
     ) -> None:
+        """Initialize the SemanticScholarClient.
+
+        Args:
+            config: API configuration. Defaults to a new ``APIConfig``.
+            client: Optional pre-configured httpx client. If None, one
+                will be created internally.
+        """
         self._config = config or APIConfig()
         self._base_url = self._config.SEMANTIC_SCHOLAR_BASE_URL.rstrip("/")
         self._rate_limit = self._config.SEMANTIC_SCHOLAR_RATE_LIMIT
@@ -61,15 +81,14 @@ class SemanticScholarClient:
     ) -> list[Paper]:
         """Search papers by keyword.
 
-        Parameters
-        ----------
-        query:
-            Free-text search string.
-        limit:
-            Maximum number of results (capped at 100 by the API).
-        fields:
-            Comma-separated S2 field names.  Defaults to
-            :data:`DEFAULT_SEARCH_FIELDS`.
+        Args:
+            query: Free-text search string.
+            limit: Maximum number of results (capped at 100 by the API).
+            fields: Comma-separated S2 field names. Defaults to
+                :data:`DEFAULT_SEARCH_FIELDS`.
+
+        Returns:
+            A list of matching Paper objects.
         """
         fields = fields or DEFAULT_SEARCH_FIELDS
         params: dict[str, Any] = {
@@ -90,11 +109,12 @@ class SemanticScholarClient:
     async def get_paper(self, paper_id: str) -> Paper | None:
         """Retrieve a single paper by its Semantic Scholar ID or DOI.
 
-        Parameters
-        ----------
-        paper_id:
-            A Semantic Scholar ``paperId`` or a DOI (e.g.
-            ``DOI:10.1234/...``).
+        Args:
+            paper_id: A Semantic Scholar ``paperId`` or a DOI (e.g.
+                ``DOI:10.1234/...``).
+
+        Returns:
+            A Paper object, or None if not found.
         """
         data = await self._request(
             "GET",
@@ -112,12 +132,12 @@ class SemanticScholarClient:
     ) -> list[Paper]:
         """Return papers that cite the given paper.
 
-        Parameters
-        ----------
-        paper_id:
-            Semantic Scholar paper ID.
-        limit:
-            Maximum number of citing papers to return.
+        Args:
+            paper_id: Semantic Scholar paper ID.
+            limit: Maximum number of citing papers to return.
+
+        Returns:
+            A list of citing Paper objects.
         """
         params: dict[str, Any] = {
             "fields": DEFAULT_SEARCH_FIELDS,
@@ -144,43 +164,19 @@ class SemanticScholarClient:
 
         Uses the paper's ``paper_id``, ``doi``, or ``arxiv_id`` (in that
         priority order) to look up the S2 record.
-        """
-        s2_id = paper.paper_id
-        # Prefer DOI-based lookup when the paper didn't originate from S2
-        if paper.source != PaperSource.SEMANTIC_SCHOLAR and paper.doi:
-            s2_id = f"DOI:{paper.doi}"
-        elif paper.source != PaperSource.SEMANTIC_SCHOLAR and paper.arxiv_id:
-            s2_id = f"ArXiv:{paper.arxiv_id}"
 
+        Args:
+            paper: The Paper object to enrich.
+
+        Returns:
+            The same Paper (or a copy) with enriched fields.
+        """
+        s2_id = self._resolve_s2_paper_id(paper)
         s2_paper = await self.get_paper(s2_id)
         if s2_paper is None:
             return paper
 
-        # Merge fields that S2 can fill
-        update: dict[str, Any] = {}
-        if s2_paper.citation_count is not None:
-            update["citation_count"] = s2_paper.citation_count
-        if s2_paper.relevance_score is not None:
-            update["relevance_score"] = s2_paper.relevance_score
-        if s2_paper.influence_score is not None:
-            update["influence_score"] = s2_paper.influence_score
-        if paper.abstract is None and s2_paper.abstract:
-            update["abstract"] = s2_paper.abstract
-        if paper.pdf_url is None and s2_paper.pdf_url:
-            update["pdf_url"] = s2_paper.pdf_url
-        if paper.url is None and s2_paper.url:
-            update["url"] = s2_paper.url
-        if paper.year is None and s2_paper.year is not None:
-            update["year"] = s2_paper.year
-        if paper.doi is None and s2_paper.doi:
-            update["doi"] = s2_paper.doi
-        if paper.arxiv_id is None and s2_paper.arxiv_id:
-            update["arxiv_id"] = s2_paper.arxiv_id
-        if not paper.authors and s2_paper.authors:
-            update["authors"] = s2_paper.authors
-        if not paper.keywords and s2_paper.keywords:
-            update["keywords"] = s2_paper.keywords
-
+        update = self._build_enrichment_update(paper, s2_paper)
         return paper.model_copy(update=update)
 
     # ------------------------------------------------------------------
@@ -188,22 +184,92 @@ class SemanticScholarClient:
     # ------------------------------------------------------------------
 
     async def close(self) -> None:
-        """Close the underlying HTTP client (only if we own it)."""
+        """Close the underlying HTTP client (only if we own it).
+
+        If the client was provided externally at construction time, this
+        is a no-op to avoid closing a shared client.
+        """
         if self._owns_client:
             await self._client.aclose()
 
     async def __aenter__(self) -> SemanticScholarClient:
+        """Enter the async context manager.
+
+        Returns:
+            The SemanticScholarClient instance.
+        """
         return self
 
-    async def __aexit__(self, *exc: Any) -> None:
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: types.TracebackType | None,
+    ) -> None:
+        """Exit the async context manager and close the HTTP client if owned.
+
+        Args:
+            exc_type: Exception type, or None if no exception occurred.
+            exc_val: Exception instance, or None.
+            exc_tb: Traceback object, or None.
+        """
         await self.close()
 
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _resolve_s2_paper_id(paper: Paper) -> str:
+        """Determine the best Semantic Scholar ID for lookup.
+
+        Prefers DOI or ArXiv ID for papers not originating from S2.
+
+        Args:
+            paper: The paper to resolve an ID for.
+
+        Returns:
+            A string ID suitable for the S2 API.
+        """
+        if paper.source != PaperSource.SEMANTIC_SCHOLAR and paper.doi:
+            return f"DOI:{paper.doi}"
+        if paper.source != PaperSource.SEMANTIC_SCHOLAR and paper.arxiv_id:
+            return f"ArXiv:{paper.arxiv_id}"
+        return paper.paper_id
+
+    @staticmethod
+    def _build_enrichment_update(paper: Paper, s2_paper: Paper) -> dict[str, Any]:
+        """Build an update dict of fields to enrich from S2 data.
+
+        Args:
+            paper: The original paper.
+            s2_paper: The paper looked up from Semantic Scholar.
+
+        Returns:
+            Dictionary of fields to update on the original paper.
+        """
+        update: dict[str, Any] = {}
+        # Fields from S2 that are always copied when present
+        for field in ("citation_count", "relevance_score", "influence_score"):
+            val = getattr(s2_paper, field)
+            if val is not None:
+                update[field] = val
+        # Fields only copied when the original paper lacks them
+        for field in (
+            "abstract", "pdf_url", "url", "doi", "arxiv_id",
+            "year", "authors", "keywords",
+        ):
+            if not getattr(paper, field) and getattr(s2_paper, field):
+                update[field] = getattr(s2_paper, field)
+        return update
+
     async def _rate_limit_sleep(self) -> None:
-        """Sleep the minimum interval required by the rate limit."""
+        """Sleep the minimum interval required by the rate limit.
+
+        Calculates the required wait time from ``_rate_limit`` and sleeps
+        if the previous request was too recent. Updates
+        ``_last_request_time`` after sleeping.
+        """
         if self._rate_limit <= 0:
             return
         import time
@@ -222,7 +288,16 @@ class SemanticScholarClient:
         *,
         params: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
-        """Execute an HTTP request with rate-limiting and error handling."""
+        """Execute an HTTP request with rate-limiting and error handling.
+
+        Args:
+            method: HTTP method (e.g. ``"GET"``).
+            path: API path (e.g. ``"/paper/search"``).
+            params: Optional query parameters.
+
+        Returns:
+            Parsed JSON response dict, or None on error.
+        """
         await self._rate_limit_sleep()
 
         url = f"{self._base_url}{path}"
@@ -280,15 +355,15 @@ class SemanticScholarClient:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _parse_paper(raw: dict[str, Any]) -> Paper | None:
-        """Convert a raw S2 JSON object into a :class:`Paper`."""
-        if not raw or not raw.get("paperId"):
-            return None
+    def _parse_s2_authors(raw: dict[str, Any]) -> list[Author]:
+        """Extract author list from raw S2 data.
 
-        paper_id = str(raw["paperId"])
-        title = raw.get("title") or ""
+        Args:
+            raw: A dict from the Semantic Scholar API.
 
-        # Authors
+        Returns:
+            List of Author objects with names and S2 IDs.
+        """
         authors: list[Author] = []
         for a in raw.get("authors") or []:
             name = a.get("name")
@@ -299,51 +374,88 @@ class SemanticScholarClient:
                         semantic_scholar_id=a.get("authorId"),
                     )
                 )
+        return authors
 
-        # External IDs
-        ext = raw.get("externalIds") or {}
-        doi = ext.get("DOI")
-        arxiv_id = ext.get("ArXiv")
+    @staticmethod
+    def _parse_s2_pub_date(raw: dict[str, Any]) -> Any:
+        """Parse publication date from raw S2 data.
 
-        # PDF URL
-        pdf_url: str | None = None
+        Args:
+            raw: A dict from the Semantic Scholar API.
+
+        Returns:
+            A datetime object, or None.
+        """
+        pub_str = raw.get("publicationDate")
+        if not pub_str:
+            return None
+        try:
+            from datetime import date as date_type
+            from datetime import datetime as dt
+
+            pub_date = date_type.fromisoformat(pub_str)
+            return dt.combine(pub_date, dt.min.time())
+        except (ValueError, TypeError):
+            return None
+
+    @staticmethod
+    def _parse_s2_pdf_url(raw: dict[str, Any]) -> str | None:
+        """Extract open-access PDF URL from raw S2 data.
+
+        Args:
+            raw: A dict from the Semantic Scholar API.
+
+        Returns:
+            PDF URL string, or None.
+        """
         oa_pdf = raw.get("openAccessPdf")
         if isinstance(oa_pdf, dict) and oa_pdf.get("url"):
-            pdf_url = oa_pdf["url"]
+            return oa_pdf["url"]
+        return None
 
-        # Publication date -> datetime
-        pub_date: Any = None
-        pub_str = raw.get("publicationDate")
-        if pub_str:
-            try:
-                from datetime import date as date_type
+    @staticmethod
+    def _parse_s2_keywords(raw: dict[str, Any]) -> list[str]:
+        """Extract keywords from fieldsOfStudy in raw S2 data.
 
-                pub_date = date_type.fromisoformat(pub_str)
-                # Convert to datetime at midnight
-                from datetime import datetime as dt
+        Args:
+            raw: A dict from the Semantic Scholar API.
 
-                pub_date = dt.combine(pub_date, dt.min.time())
-            except (ValueError, TypeError):
-                pub_date = None
-
-        # Fields of study -> keywords
-        keywords: list[str] = []
+        Returns:
+            List of keyword strings.
+        """
         fos = raw.get("fieldsOfStudy")
         if isinstance(fos, list):
-            keywords = [f for f in fos if isinstance(f, str)]
+            return [f for f in fos if isinstance(f, str)]
+        return []
+
+    @staticmethod
+    def _parse_paper(raw: dict[str, Any]) -> Paper | None:
+        """Convert a raw S2 JSON object into a Paper.
+
+        Args:
+            raw: A dict from the Semantic Scholar API.
+
+        Returns:
+            A Paper object, or None if the data is insufficient.
+        """
+        if not raw or not raw.get("paperId"):
+            return None
+
+        paper_id = str(raw["paperId"])
+        ext = raw.get("externalIds") or {}
 
         return Paper(
             paper_id=paper_id,
             source=PaperSource.SEMANTIC_SCHOLAR,
-            doi=doi,
-            title=title,
+            doi=ext.get("DOI"),
+            title=raw.get("title") or "",
             abstract=raw.get("abstract"),
-            authors=authors,
-            published_date=pub_date,
+            authors=SemanticScholarClient._parse_s2_authors(raw),
+            published_date=SemanticScholarClient._parse_s2_pub_date(raw),
             year=raw.get("year"),
             citation_count=raw.get("citationCount"),
             url=raw.get("url"),
-            pdf_url=pdf_url,
-            arxiv_id=arxiv_id,
-            keywords=keywords,
+            pdf_url=SemanticScholarClient._parse_s2_pdf_url(raw),
+            arxiv_id=ext.get("ArXiv"),
+            keywords=SemanticScholarClient._parse_s2_keywords(raw),
         )

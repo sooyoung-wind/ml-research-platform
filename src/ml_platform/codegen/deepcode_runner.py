@@ -24,14 +24,26 @@ import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable
 
 from ml_platform.config import config
 
 
 @dataclass
 class CodeGenResult:
-    """Result of a code generation run."""
+    """Result of a code generation run.
+
+    Attributes:
+        success: Whether code generation succeeded.
+        paper_id: Identifier of the source paper.
+        paper_title: Title of the source paper.
+        output_dir: Directory containing generated code.
+        files_generated: List of relative paths to generated files.
+        duration_seconds: Time taken for generation.
+        error: Error message on failure.
+        pipeline_mode: Pipeline mode used ("optimized" or "comprehensive").
+        model_used: LLM model used for generation.
+    """
 
     success: bool = False
     paper_id: str = ""
@@ -46,7 +58,21 @@ class CodeGenResult:
 
 @dataclass
 class DeepCodeConfig:
-    """Configuration for DeepCode pipeline."""
+    """Configuration for DeepCode pipeline.
+
+    Attributes:
+        llm_provider: LLM provider ("openai", "anthropic", or "google").
+        model_name: Provider-specific model name.
+        planning_model: Optional separate model for planning.
+        enable_indexing: Enable CodeRAG reference mining (comprehensive mode).
+        enable_segmentation: Enable document segmentation for long papers.
+        segmentation_threshold: Character count threshold for segmentation.
+        max_iterations: Maximum implementation iterations.
+        output_base_dir: Working directory for generated code.
+        openai_api_key: OpenAI API key (falls back to env var).
+        anthropic_api_key: Anthropic API key (falls back to env var).
+        google_api_key: Google API key (falls back to env var).
+    """
 
     # LLM provider: "openai" | "anthropic" | "google"
     llm_provider: str = "openai"
@@ -73,16 +99,28 @@ class DeepCodeConfig:
 class DeepCodeRunner:
     """Wrapper around DeepCode's multi-agent pipeline.
 
-    Provides a simple interface:
+    Provides a simple interface::
+
         runner = DeepCodeRunner(config)
         result = await runner.generate(paper_path, paper_id="2312.00752")
 
     Supports two modes:
         - optimized: Fast mode, no reference mining, lower cost
         - comprehensive: Full pipeline with CodeRAG, higher quality
+
+    Attributes:
+        config: The DeepCodeConfig used to initialise the runner.
+        output_dir: Base output directory for generated code.
+        config_dir: DeepCode configuration directory.
     """
 
     def __init__(self, dc_config: DeepCodeConfig | None = None) -> None:
+        """Initialize the DeepCodeRunner.
+
+        Args:
+            dc_config: Configuration for the DeepCode pipeline.  Uses defaults
+                if not provided.
+        """
         self.config = dc_config or DeepCodeConfig()
         self._setup_dirs()
         self._write_secrets()
@@ -151,7 +189,11 @@ class DeepCodeRunner:
             progress_callback: Optional callback(progress_pct, message).
 
         Returns:
-            CodeGenResult with paths to generated code.
+            CodeGenResult with paths to generated code and status.
+
+        Raises:
+            Exception: If the DeepCode pipeline encounters an unexpected
+                error (caught and stored in result.error).
         """
         start_time = time.time()
         result = CodeGenResult(
@@ -203,87 +245,135 @@ class DeepCodeRunner:
 
         We call DeepCode's orchestration engine directly, changing CWD
         to a temp directory so it creates its deepcode_lab/ output there.
+
+        Args:
+            paper_path: Path to the paper file.
+            output_dir: Directory to copy generated code into.
+            mode: Pipeline mode ("optimized" or "comprehensive").
+            progress_callback: Optional progress callback.
+
+        Returns:
+            True if generated files were found, False otherwise.
+
+        Raises:
+            Exception: Propagated from DeepCode's orchestration engine.
         """
-        import yaml
-
-        # Create a temp working directory for DeepCode
-        # (DeepCode creates deepcode_lab/ in CWD)
         with tempfile.TemporaryDirectory(prefix="deepcode_") as tmpdir:
-            # Copy paper to temp dir
-            paper_name = Path(paper_path).name
-            tmp_paper = os.path.join(tmpdir, paper_name)
-            shutil.copy2(paper_path, tmp_paper)
+            self._prepare_deepcode_input(paper_path, tmpdir)
 
-            # Write config files in the temp dir
-            # (DeepCode looks for mcp_agent.secrets.yaml in CWD)
-            keys = {
-                "openai": self.config.openai_api_key or os.environ.get("OPENAI_API_KEY", ""),
-                "anthropic": self.config.anthropic_api_key or os.environ.get("ANTHROPIC_API_KEY", ""),
-                "google": self.config.google_api_key or os.environ.get("GOOGLE_API_KEY", "")
-                or os.environ.get("GEMINI_API_KEY", ""),
-            }
-
-            secrets = {}
-            for provider, key in keys.items():
-                if key:
-                    secrets[provider] = {"api_key": key}
-
-            with open(os.path.join(tmpdir, "mcp_agent.secrets.yaml"), "w") as f:
-                yaml.dump(secrets, f, default_flow_style=False)
-
-            main_config = {"llm_provider": self.config.llm_provider}
-            with open(os.path.join(tmpdir, "mcp_agent.config.yaml"), "w") as f:
-                yaml.dump(main_config, f, default_flow_style=False)
-
-            # Save current dir
             original_cwd = os.getcwd()
-
             try:
                 os.chdir(tmpdir)
-
-                # Import and run DeepCode's orchestration
-                from workflows.agent_orchestration_engine import (
-                    execute_multi_agent_research_pipeline,
+                pipeline_result = await self._execute_deepcode_pipeline(
+                    tmpdir, tmpdir, mode, progress_callback,
                 )
-                from utils.llm_utils import get_preferred_llm_class
-
-                # Simple logger
-                import logging
-                logger = logging.getLogger("deepcode")
-                logger.setLevel(logging.INFO)
-
-                enable_indexing = mode == "comprehensive"
-
-                pipeline_result = await execute_multi_agent_research_pipeline(
-                    input_source=tmp_paper,
-                    logger=logger,
-                    progress_callback=progress_callback,
-                    enable_indexing=enable_indexing,
-                )
-
-                # Copy generated files from deepcode_lab/ to output_dir
-                lab_dir = os.path.join(tmpdir, "deepcode_lab")
-                if os.path.isdir(lab_dir):
-                    # Copy all generated files
-                    for item in os.listdir(lab_dir):
-                        src = os.path.join(lab_dir, item)
-                        dst = os.path.join(output_dir, item)
-                        if os.path.isdir(src):
-                            if os.path.exists(dst):
-                                shutil.rmtree(dst)
-                            shutil.copytree(src, dst)
-                        else:
-                            shutil.copy2(src, dst)
-                    return True
-
-                return False
-
+                return self._copy_generated_output(tmpdir, output_dir)
             finally:
                 os.chdir(original_cwd)
 
+    def _prepare_deepcode_input(self, paper_path: str, tmpdir: str) -> None:
+        """Copy paper file and write config files into the temp directory.
+
+        Args:
+            paper_path: Path to the source paper file.
+            tmpdir: Temporary working directory for DeepCode.
+        """
+        import yaml
+
+        paper_name = Path(paper_path).name
+        tmp_paper = os.path.join(tmpdir, paper_name)
+        shutil.copy2(paper_path, tmp_paper)
+
+        keys = {
+            "openai": self.config.openai_api_key or os.environ.get("OPENAI_API_KEY", ""),
+            "anthropic": self.config.anthropic_api_key or os.environ.get("ANTHROPIC_API_KEY", ""),
+            "google": self.config.google_api_key or os.environ.get("GOOGLE_API_KEY", "")
+            or os.environ.get("GEMINI_API_KEY", ""),
+        }
+
+        secrets = {}
+        for provider, key in keys.items():
+            if key:
+                secrets[provider] = {"api_key": key}
+
+        with open(os.path.join(tmpdir, "mcp_agent.secrets.yaml"), "w") as f:
+            yaml.dump(secrets, f, default_flow_style=False)
+
+        main_config = {"llm_provider": self.config.llm_provider}
+        with open(os.path.join(tmpdir, "mcp_agent.config.yaml"), "w") as f:
+            yaml.dump(main_config, f, default_flow_style=False)
+
+    async def _execute_deepcode_pipeline(
+        self,
+        paper_dir: str,
+        tmpdir: str,
+        mode: str,
+        progress_callback: Callable | None,
+    ) -> None:
+        """Import and run the DeepCode orchestration pipeline.
+
+        Args:
+            paper_dir: Directory containing the paper file.
+            tmpdir: Temporary working directory (CWD for DeepCode).
+            mode: Pipeline mode ("optimized" or "comprehensive").
+            progress_callback: Optional progress callback.
+        """
+        import logging as _logging
+        from workflows.agent_orchestration_engine import (
+            execute_multi_agent_research_pipeline,
+        )
+
+        dc_logger = _logging.getLogger("deepcode")
+        dc_logger.setLevel(_logging.INFO)
+
+        paper_name = [f for f in os.listdir(paper_dir)
+                       if f.endswith((".pdf", ".md"))][0]
+        tmp_paper = os.path.join(tmpdir, paper_name)
+        enable_indexing = mode == "comprehensive"
+
+        await execute_multi_agent_research_pipeline(
+            input_source=tmp_paper,
+            logger=dc_logger,
+            progress_callback=progress_callback,
+            enable_indexing=enable_indexing,
+        )
+
+    @staticmethod
+    def _copy_generated_output(tmpdir: str, output_dir: str) -> bool:
+        """Copy generated files from deepcode_lab/ to the output directory.
+
+        Args:
+            tmpdir: Temporary directory containing deepcode_lab/.
+            output_dir: Target directory for generated files.
+
+        Returns:
+            True if files were copied, False if no output was found.
+        """
+        lab_dir = os.path.join(tmpdir, "deepcode_lab")
+        if not os.path.isdir(lab_dir):
+            return False
+
+        for item in os.listdir(lab_dir):
+            src = os.path.join(lab_dir, item)
+            dst = os.path.join(output_dir, item)
+            if os.path.isdir(src):
+                if os.path.exists(dst):
+                    shutil.rmtree(dst)
+                shutil.copytree(src, dst)
+            else:
+                shutil.copy2(src, dst)
+        return True
+
     @staticmethod
     def _list_generated_files(directory: Path) -> list[str]:
-        """List all generated code files."""
+        """List all generated code files.
+
+        Args:
+            directory: Directory to scan for generated files.
+
+        Returns:
+            Sorted list of relative file paths with recognised extensions.
+        """
         extensions = {".py", ".js", ".ts", ".jsx", ".tsx", ".sh", ".yaml", ".yml",
                       ".json", ".md", ".txt", ".toml", ".cfg", ".ini", ".ipynb"}
         files = []

@@ -1,4 +1,11 @@
-"""ML Research Platform — Configuration management."""
+"""ML Research Platform — Configuration management.
+
+Provides centralized configuration for API keys, rate limits,
+directory paths, and default settings used across the platform.
+
+Attributes:
+    PROJECT_ROOT: Path to the project root directory.
+"""
 
 from __future__ import annotations
 
@@ -13,7 +20,31 @@ load_dotenv(PROJECT_ROOT / ".env")
 
 
 class APIConfig:
-    """API keys and rate limit settings."""
+    """API keys and rate limit settings for external services.
+
+    Attributes:
+        SEMANTIC_SCHOLAR_API_KEY: API key for Semantic Scholar.
+        SEMANTIC_SCHOLAR_BASE_URL: Base URL for Semantic Scholar API.
+        SEMANTIC_SCHOLAR_RATE_LIMIT: Requests per second (with key: 10).
+        ARXIV_BASE_URL: Base URL for arXiv API.
+        ARXIV_RATE_LIMIT: Requests per second for arXiv.
+        HUGGINGFACE_PAPERS_BASE_URL: Base URL for HuggingFace Papers.
+        HUGGINGFACE_PAPERS_RATE_LIMIT: Requests per second for HuggingFace.
+        OPENALEX_BASE_URL: Base URL for OpenAlex API.
+        OPENALEX_MAILTO: Email for OpenAlex polite pool.
+        CROSSREF_BASE_URL: Base URL for CrossRef API.
+        CROSSREF_MAILTO: Email for CrossRef polite pool.
+        CORE_API_KEY: API key for CORE.
+        CORE_BASE_URL: Base URL for CORE API.
+        UNPAYWALL_EMAIL: Email for Unpaywall API.
+        GROBID_BASE_URL: Base URL for GROBID service.
+        GROBID_RATE_LIMIT: Requests per second for GROBID.
+        GROBID_TIMEOUT: Timeout in seconds for GROBID PDF processing.
+        OPENAI_API_KEY: API key for OpenAI.
+        OPENAI_MODEL: Default OpenAI model name.
+        ANTHROPIC_API_KEY: API key for Anthropic.
+        GOOGLE_API_KEY: API key for Google/Gemini.
+    """
 
     # Semantic Scholar
     SEMANTIC_SCHOLAR_API_KEY: str = os.getenv("SEMANTIC_SCHOLAR_API_KEY", "")
@@ -60,7 +91,22 @@ class APIConfig:
 
 
 class AppConfig:
-    """Application-level settings."""
+    """Application-level settings for directories, defaults, and weights.
+
+    Attributes:
+        PROJECT_ROOT: Path to the project root directory.
+        DATA_DIR: Path to the data directory.
+        PDF_DIR: Path to the PDF storage directory.
+        GENERATED_DIR: Path to the generated code output directory.
+        DB_PATH: Path to the SQLite database file.
+        DEFAULT_TOPICS: List of default research topics for discovery.
+        DEFAULT_ARXIV_CATEGORIES: Default arXiv categories for paper search.
+        DEFAULT_TOP_N: Default number of papers to retrieve.
+        WEIGHT_CITATIONS: Weight for citation count in ranking.
+        WEIGHT_RELEVANCE: Weight for relevance score in ranking.
+        WEIGHT_FRESHNESS: Weight for freshness in ranking.
+        WEIGHT_NO_CODE: Weight bonus for papers without code implementation.
+    """
 
     PROJECT_ROOT: Path = PROJECT_ROOT
     DATA_DIR: Path = PROJECT_ROOT / "data"

@@ -23,22 +23,42 @@ class MetadataEnricher:
     Sources:
     - Semantic Scholar: citation count, influential citation count, TLDR, venue
     - HuggingFace Papers: code repo, GitHub stars, upvotes
+
+    Attributes:
+        s2: SemanticScholarClient instance for citation and venue data.
+        hf: HuggingFacePapersClient instance for code and upvote data.
     """
 
     def __init__(self) -> None:
+        """Initialize the MetadataEnricher with default API clients."""
         self.s2 = SemanticScholarClient()
         self.hf = HuggingFacePapersClient()
 
     async def __aenter__(self) -> MetadataEnricher:
+        """Enter the async context manager.
+
+        Returns:
+            The MetadataEnricher instance.
+        """
         return self
 
     async def __aexit__(self, *args: Any) -> None:
-        pass
+        """Exit the async context manager.
+
+        Args:
+            args: Exception type, value, and traceback (if any).
+        """
 
     async def enrich(self, paper: Paper) -> Paper:
         """Enrich a single paper with external metadata.
 
         Updates citation count, code availability, venue, and other fields.
+
+        Args:
+            paper: The Paper object to enrich.
+
+        Returns:
+            The enriched Paper object with updated metadata.
         """
         tasks = []
         if paper.arxiv_id:
@@ -59,7 +79,15 @@ class MetadataEnricher:
         return paper
 
     async def enrich_batch(self, papers: list[Paper]) -> list[Paper]:
-        """Enrich multiple papers sequentially with rate-limiting."""
+        """Enrich multiple papers sequentially with rate-limiting.
+
+        Args:
+            papers: List of Paper objects to enrich.
+
+        Returns:
+            List of enriched Paper objects (original order preserved,
+            failed papers returned unchanged).
+        """
         enriched = []
         async with self.s2, self.hf:
             for i, paper in enumerate(papers):
@@ -73,7 +101,11 @@ class MetadataEnricher:
         return enriched
 
     async def _enrich_s2(self, paper: Paper) -> None:
-        """Fetch citation count, venue, TLDR from Semantic Scholar."""
+        """Fetch citation count, venue, TLDR from Semantic Scholar.
+
+        Args:
+            paper: The Paper object to enrich in-place.
+        """
         if not paper.arxiv_id:
             return
 
@@ -83,7 +115,11 @@ class MetadataEnricher:
             logger.warning("S2 enrichment failed for %s: %s", paper.arxiv_id, exc)
 
     async def _enrich_s2_by_doi(self, paper: Paper) -> None:
-        """Fetch metadata from S2 using DOI."""
+        """Fetch metadata from S2 using DOI.
+
+        Args:
+            paper: The Paper object to enrich in-place.
+        """
         if not paper.doi:
             return
 
@@ -93,7 +129,11 @@ class MetadataEnricher:
             logger.warning("S2 enrichment by DOI failed for %s: %s", paper.doi, exc)
 
     async def _enrich_hf(self, paper: Paper) -> None:
-        """Check code availability via HuggingFace Papers."""
+        """Check code availability via HuggingFace Papers.
+
+        Args:
+            paper: The Paper object to enrich in-place.
+        """
         if not paper.arxiv_id:
             return
 

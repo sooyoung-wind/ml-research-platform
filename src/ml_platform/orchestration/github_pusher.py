@@ -21,10 +21,10 @@ import re
 import shutil
 import tempfile
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Sequence
 
 import httpx
 
@@ -38,36 +38,50 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class GitHubPushConfig:
-    """Configuration for the GitHub pusher."""
+    """Configuration for the GitHub pusher.
 
-    # GitHub username (auto-detected from git credentials if not set)
+    Attributes:
+        username: GitHub username (auto-detected from git credentials if empty).
+        token: GitHub personal access token or password.
+        default_branch: Default branch name for new repositories.
+        visibility: Repo visibility ("public" or "private").
+        api_base_url: GitHub API base URL (change for GitHub Enterprise).
+        git_credentials_path: Path to the git-credentials file.
+        auto_readme: Whether to auto-generate a README if missing.
+        git_user_name: Committer name (falls back to git config).
+        git_user_email: Committer email (falls back to git config).
+    """
+
     username: str = ""
-    # GitHub personal access token or password
-    # Falls back to parsing ~/.git-credentials or GITHUB_TOKEN env var
     token: str = ""
-    # Default branch name
     default_branch: str = "main"
-    # Repo visibility: "public" or "private"
     visibility: str = "public"
-    # GitHub API base URL (change for GitHub Enterprise)
     api_base_url: str = "https://api.github.com"
-    # Path to git-credentials file
     git_credentials_path: str = "~/.git-credentials"
-    # Auto-generate a README if the code dir lacks one
     auto_readme: bool = True
-    # Committer name/email (falls back to git config)
     git_user_name: str = ""
     git_user_email: str = ""
 
 
 @dataclass
 class PushResult:
-    """Result of a GitHub push operation."""
+    """Result of a GitHub push operation.
+
+    Attributes:
+        success: Whether the push completed successfully.
+        repo_url: URL of the GitHub repository.
+        clone_url: Git clone URL for the repository.
+        repo_name: Full repository name (e.g. ``user/repo-name``).
+        commit_sha: SHA of the initial commit.
+        error: Error message if the push failed.
+        duration_seconds: Wall-clock time for the push operation.
+        files_pushed: Number of files pushed to the repository.
+    """
 
     success: bool = False
-    repo_url: str = ""  # e.g. https://github.com/user/repo
-    clone_url: str = ""  # e.g. https://github.com/user/repo.git
-    repo_name: str = ""  # e.g. user/repo-name
+    repo_url: str = ""
+    clone_url: str = ""
+    repo_name: str = ""
     commit_sha: str = ""
     error: str = ""
     duration_seconds: float = 0.0
@@ -82,8 +96,13 @@ class PushResult:
 def _parse_git_credentials(path: str = "~/.git-credentials") -> tuple[str, str]:
     """Parse username and token from a git-credentials file.
 
-    Only supports the HTTPS format: https://username:token@github.com
-    Returns (username, token) or ("", "") on failure.
+    Only supports the HTTPS format: ``https://username:token@github.com``.
+
+    Args:
+        path: Filesystem path to the git-credentials file.
+
+    Returns:
+        A ``(username, token)`` tuple, or ``("", "")`` on failure.
     """
     cred_path = Path(path).expanduser()
     if not cred_path.is_file():
@@ -96,7 +115,7 @@ def _parse_git_credentials(path: str = "~/.git-credentials") -> tuple[str, str]:
             if not line or "github.com" not in line:
                 continue
             # https://username:token@github.com
-            match = re.match(r"https://([^:]+):([^@]+)@github\.com", line)
+            match = re.match(r"https://([^:***@]+)@github\.com", line)
             if match:
                 return match.group(1), match.group(2)
     except OSError:
@@ -106,12 +125,20 @@ def _parse_git_credentials(path: str = "~/.git-credentials") -> tuple[str, str]:
 
 
 async def _detect_git_user_name() -> str:
-    """Detect git user.name from git config."""
+    """Detect git user.name from git config.
+
+    Returns:
+        The configured git user.name, or an empty string.
+    """
     return (await _run_git(["config", "--global", "--get", "user.name"])).strip()
 
 
 async def _detect_git_user_email() -> str:
-    """Detect git user.email from git config."""
+    """Detect git user.email from git config.
+
+    Returns:
+        The configured git user.email, or an empty string.
+    """
     return (await _run_git(["config", "--global", "--get", "user.email"])).strip()
 
 
@@ -127,7 +154,20 @@ async def _run_git(
     env: dict[str, str] | None = None,
     check: bool = True,
 ) -> str:
-    """Run a git command and return stdout."""
+    """Run a git command and return stdout.
+
+    Args:
+        args: Git sub-command and arguments (without the ``git`` prefix).
+        cwd: Working directory for the command.
+        env: Additional environment variables to merge.
+        check: If True, raise ``RuntimeError`` on non-zero exit code.
+
+    Returns:
+        The command's standard output as a string.
+
+    Raises:
+        RuntimeError: If *check* is True and the command exits non-zero.
+    """
     cmd = ["git"] + args
     merged_env = None
     if env:
@@ -163,11 +203,20 @@ def _make_repo_name(
     paper_title: str | None = None,
     prefix: str = "ml-impl",
 ) -> str:
-    """Generate a GitHub-friendly repo name.
+    """Generate a GitHub-friendly repository name.
 
     Examples:
-        paper_id="2312.00752" → "ml-impl-2312-00752"
-        paper_id="2312.00752", title="Diffusion Models" → "ml-impl-diffusion-models-2312-00752"
+        ``paper_id="2312.00752"`` → ``"ml-impl-2312-00752"``
+        ``paper_id="2312.00752", title="Diffusion Models"`` →
+        ``"ml-impl-diffusion-models-2312-00752"``
+
+    Args:
+        paper_id: Paper identifier.
+        paper_title: Optional paper title used to make the name more descriptive.
+        prefix: Prefix for the repository name.
+
+    Returns:
+        A slugified repository name string.
     """
     safe_id = paper_id.replace("/", "-").replace(".", "-")
 
@@ -186,7 +235,15 @@ def _make_description(
     paper_title: str | None = None,
     paper_id: str = "",
 ) -> str:
-    """Generate a repo description."""
+    """Generate a repository description.
+
+    Args:
+        paper_title: Optional paper title.
+        paper_id: Optional paper identifier.
+
+    Returns:
+        A pipe-delimited description string.
+    """
     parts: list[str] = []
     if paper_title:
         parts.append(f"Implementation of: {paper_title}")
@@ -204,7 +261,11 @@ def _make_description(
 class GitHubPusher:
     """Creates a GitHub repository and pushes generated code to it.
 
-    Usage:
+    Attributes:
+        config: The active ``GitHubPushConfig`` used for this instance.
+
+    Usage::
+
         pusher = GitHubPusher()
         result = await pusher.push(
             code_dir="/path/to/generated/code",
@@ -215,6 +276,12 @@ class GitHubPusher:
     """
 
     def __init__(self, push_config: GitHubPushConfig | None = None) -> None:
+        """Initialize the GitHub pusher.
+
+        Args:
+            push_config: Optional push configuration. Defaults to a
+                fresh ``GitHubPushConfig`` with auto-detected credentials.
+        """
         self.config = push_config or GitHubPushConfig()
         self._resolve_credentials()
 
@@ -263,12 +330,11 @@ class GitHubPusher:
                 from code_dir. If None, push everything.
 
         Returns:
-            PushResult with the repo URL and status.
+            ``PushResult`` with the repo URL and status.
         """
         start_time = time.time()
         code_path = Path(code_dir).resolve()
 
-        # --- Validate input directory ---
         if not code_path.is_dir():
             return PushResult(
                 success=False,
@@ -276,77 +342,28 @@ class GitHubPusher:
                 duration_seconds=time.time() - start_time,
             )
 
-        # --- Determine repo name & description ---
         name = repo_name or _make_repo_name(paper_id, paper_title)
         desc = description or _make_description(paper_title, paper_id)
         vis = visibility or self.config.visibility
 
-        # --- Detect git identity ---
-        user_name = self.config.git_user_name or await _detect_git_user_name() or "ML Research Platform"
-        user_email = self.config.git_user_email or await _detect_git_user_email() or "platform@ml-research.local"
+        user_name, user_email = await self._resolve_git_credentials()
 
         try:
-            # Step 1: Create the remote repository via GitHub API
-            logger.info("Creating GitHub repository: %s/%s", self.config.username, name)
             repo_info = await self._create_repo(name=name, description=desc, visibility=vis)
             clone_url = repo_info["clone_url"]
             repo_url = repo_info["html_url"]
             full_name = repo_info["full_name"]
-
             logger.info("Created remote repo: %s", repo_url)
 
-            # Step 2: Prepare the local git repo (in a temp copy so we don't
-            #          mutate the original generated code directory)
             with tempfile.TemporaryDirectory(prefix="gh-push-") as tmpdir:
-                work_dir = Path(tmpdir) / "repo"
-
-                # Copy files to temp dir
-                if files_to_include:
-                    work_dir.mkdir(parents=True)
-                    for rel_path in files_to_include:
-                        src = code_path / rel_path
-                        dst = work_dir / rel_path
-                        dst.parent.mkdir(parents=True, exist_ok=True)
-                        if src.is_dir():
-                            shutil.copytree(str(src), str(dst))
-                        else:
-                            shutil.copy2(str(src), str(dst))
-                else:
-                    shutil.copytree(str(code_path), str(work_dir))
-
-                # Auto-generate README if missing
-                await self._maybe_add_readme(work_dir, paper_id, paper_title, desc)
-
-                # Auto-generate .gitignore if missing
-                await self._maybe_add_gitignore(work_dir)
-
-                # Step 3: git init, add, commit
-                await _run_git(["init", "-b", self.config.default_branch], cwd=work_dir)
-                await _run_git(["config", "user.name", user_name], cwd=work_dir)
-                await _run_git(["config", "user.email", user_email], cwd=work_dir)
-                await _run_git(["add", "."], cwd=work_dir)
-
-                msg = commit_message or f"Initial commit: auto-generated implementation for {paper_id}"
-                await _run_git(["commit", "-m", msg], cwd=work_dir)
-
-                # Step 4: Add remote and push
-                auth_url = self._build_auth_url(clone_url)
-                await _run_git(["remote", "add", "origin", auth_url], cwd=work_dir)
-                await _run_git(
-                    ["push", "-u", "origin", self.config.default_branch],
-                    cwd=work_dir,
-                    # Suppress git credential prompts
-                    env={"GIT_TERMINAL_PROMPT": "0"},
+                work_dir = await self._prepare_local_repo(
+                    code_path, Path(tmpdir) / "repo", files_to_include,
+                    paper_id, paper_title, desc, user_name, user_email, commit_message,
                 )
-
-                # Step 5: Get the commit SHA
+                await self._push_to_remote(work_dir, clone_url)
                 sha = (await _run_git(["rev-parse", "HEAD"], cwd=work_dir)).strip()
 
-            # Count pushed files from original dir (tmpdir is cleaned up)
-            file_count = sum(
-                1 for p in code_path.rglob("*") if p.is_file()
-            )
-
+            file_count = sum(1 for p in code_path.rglob("*") if p.is_file())
             logger.info("Pushed %d files to %s", file_count, repo_url)
 
             return PushResult(
@@ -367,6 +384,74 @@ class GitHubPusher:
                 duration_seconds=time.time() - start_time,
             )
 
+    async def _prepare_local_repo(
+        self,
+        code_path: Path,
+        work_dir: Path,
+        files_to_include: Sequence[str] | None,
+        paper_id: str,
+        paper_title: str | None,
+        description: str,
+        user_name: str,
+        user_email: str,
+        commit_message: str | None,
+    ) -> Path:
+        """Prepare the local git repo by copying files and running git init/commit.
+
+        Args:
+            code_path: Source directory with generated code.
+            work_dir: Destination working directory for the repo.
+            files_to_include: Optional subset of files to include.
+            paper_id: Paper identifier for README.
+            paper_title: Optional paper title for README.
+            description: Repository description for README.
+            user_name: Git committer name.
+            user_email: Git committer email.
+            commit_message: Custom commit message.
+
+        Returns:
+            The work_dir Path with the prepared repo.
+        """
+        if files_to_include:
+            work_dir.mkdir(parents=True)
+            for rel_path in files_to_include:
+                src = code_path / rel_path
+                dst = work_dir / rel_path
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                if src.is_dir():
+                    shutil.copytree(str(src), str(dst))
+                else:
+                    shutil.copy2(str(src), str(dst))
+        else:
+            shutil.copytree(str(code_path), str(work_dir))
+
+        await self._maybe_add_readme(work_dir, paper_id, paper_title, description)
+        await self._maybe_add_gitignore(work_dir)
+
+        await _run_git(["init", "-b", self.config.default_branch], cwd=work_dir)
+        await _run_git(["config", "user.name", user_name], cwd=work_dir)
+        await _run_git(["config", "user.email", user_email], cwd=work_dir)
+        await _run_git(["add", "."], cwd=work_dir)
+
+        msg = commit_message or f"Initial commit: auto-generated implementation for {paper_id}"
+        await _run_git(["commit", "-m", msg], cwd=work_dir)
+        return work_dir
+
+    async def _push_to_remote(self, work_dir: Path, clone_url: str) -> None:
+        """Add remote origin and push to GitHub.
+
+        Args:
+            work_dir: Local git working directory.
+            clone_url: GitHub clone URL for the remote.
+        """
+        auth_url = self._build_auth_url(clone_url)
+        await _run_git(["remote", "add", "origin", auth_url], cwd=work_dir)
+        await _run_git(
+            ["push", "-u", "origin", self.config.default_branch],
+            cwd=work_dir,
+            env={"GIT_TERMINAL_PROMPT": "0"},
+        )
+
     async def push_and_update_paper(
         self,
         code_dir: str | Path,
@@ -380,6 +465,16 @@ class GitHubPusher:
 
         Convenience method that also sets the paper status to PUSHED
         and stores the GitHub URL.
+
+        Args:
+            code_dir: Local directory with generated code.
+            paper_id: Paper identifier.
+            source: Paper source identifier.
+            paper_title: Optional paper title.
+            visibility: "public" or "private".
+
+        Returns:
+            ``PushResult`` with the repo URL and status.
         """
         from ml_platform.models import PaperSource, ProcessingStatus
         from ml_platform.db import PapersDB
@@ -416,8 +511,15 @@ class GitHubPusher:
     def _build_auth_url(self, clone_url: str) -> str:
         """Inject credentials into a clone URL for pushing.
 
-        Turns https://github.com/user/repo.git into
-        https://user:token@github.com/user/repo.git
+        Turns ``https://github.com/user/repo.git`` into
+        ``https://user:token@github.com/user/repo.git``.
+
+        Args:
+            clone_url: The HTTPS clone URL.
+
+        Returns:
+            The clone URL with embedded credentials, or the original
+            URL if credentials are not configured.
         """
         if not self.config.username or not self.config.token:
             return clone_url
@@ -435,7 +537,17 @@ class GitHubPusher:
     ) -> dict:
         """Create a GitHub repository via the REST API.
 
-        Returns the JSON response dict from GitHub.
+        Args:
+            name: Repository name.
+            description: Repository description.
+            visibility: "public" or "private".
+
+        Returns:
+            The JSON response dict from GitHub.
+
+        Raises:
+            RuntimeError: If no GitHub token is configured or the API
+                returns an error.
         """
         if not self.config.token:
             raise RuntimeError(
@@ -476,7 +588,14 @@ class GitHubPusher:
         paper_title: str | None,
         description: str,
     ) -> None:
-        """Add a README.md if one doesn't already exist."""
+        """Add a README.md if one doesn't already exist.
+
+        Args:
+            work_dir: Repository working directory.
+            paper_id: Paper identifier.
+            paper_title: Optional paper title.
+            description: Repository description for the README.
+        """
         readme_path = work_dir / "README.md"
         if readme_path.exists():
             return
@@ -508,7 +627,11 @@ class GitHubPusher:
         logger.debug("Generated README.md")
 
     async def _maybe_add_gitignore(self, work_dir: Path) -> None:
-        """Add a Python .gitignore if one doesn't already exist."""
+        """Add a Python .gitignore if one doesn't already exist.
+
+        Args:
+            work_dir: Repository working directory.
+        """
         gitignore_path = work_dir / ".gitignore"
         if gitignore_path.exists():
             return
@@ -573,7 +696,7 @@ async def push_to_github(
         config: Optional push configuration.
 
     Returns:
-        PushResult with repo URL and status.
+        ``PushResult`` with repo URL and status.
     """
     pusher = GitHubPusher(config)
     return await pusher.push(

@@ -1,10 +1,13 @@
-"""ML Research Platform — CLI interface."""
+"""ML Research Platform — CLI interface.
+
+Provides a Typer-based command-line interface for paper discovery,
+processing, code generation, and full pipeline orchestration.
+"""
 
 from __future__ import annotations
 
 import asyncio
 import os
-from typing import Optional
 
 import typer
 from rich.console import Console
@@ -41,7 +44,14 @@ def discover_search(
     top: int = typer.Option(10, "--top", "-n", help="Number of results"),
     source: str = typer.Option("all", "--source", "-s", help="Source: all, arxiv, semantic_scholar, huggingface"),
 ) -> None:
-    """Search for papers on a topic across multiple sources."""
+    """Search for papers on a topic across multiple sources.
+
+    Args:
+        topic: The search topic to look for.
+        top: Maximum number of results to return.
+        source: Paper source to search. One of "all", "arxiv",
+            "semantic_scholar", or "huggingface".
+    """
     from ml_platform.discovery.pipeline import DiscoveryPipeline
 
     console.print(f"\n[bold blue]🔍 Searching:[/] {topic} (top {top}, source: {source})\n")
@@ -83,7 +93,11 @@ def discover_search(
 def discover_daily(
     top: int = typer.Option(10, "--top", "-n", help="Results per topic"),
 ) -> None:
-    """Run daily paper discovery for all configured topics."""
+    """Run daily paper discovery for all configured topics.
+
+    Args:
+        top: Maximum number of results per topic.
+    """
     from ml_platform.config import config
     from ml_platform.discovery.pipeline import DiscoveryPipeline
 
@@ -108,7 +122,11 @@ def discover_daily(
 def discover_trending(
     limit: int = typer.Option(20, "--limit", "-n", help="Number of trending papers"),
 ) -> None:
-    """Show today's trending papers from HuggingFace."""
+    """Show today's trending papers from HuggingFace.
+
+    Args:
+        limit: Maximum number of trending papers to display.
+    """
     from ml_platform.discovery.pipeline import DiscoveryPipeline
 
     console.print("\n[bold blue]🔥 HuggingFace Trending Papers[/]\n")
@@ -143,7 +161,14 @@ def process_paper(
     no_enrich: bool = typer.Option(False, "--no-enrich", help="Skip metadata enrichment"),
     force: bool = typer.Option(False, "--force", help="Re-process even if already done"),
 ) -> None:
-    """Process a paper: download PDF, extract text, enrich metadata."""
+    """Process a paper: download PDF, extract text, enrich metadata.
+
+    Args:
+        paper_id: Paper arXiv ID (e.g. ``2312.00752``).
+        use_grobid: Whether to use GROBID for structured parsing.
+        no_enrich: Whether to skip metadata enrichment.
+        force: Whether to re-process even if already done.
+    """
     from ml_platform.models import Paper, PaperSource
     from ml_platform.processing.processor import PaperProcessor
 
@@ -197,7 +222,13 @@ def process_batch(
     top: int = typer.Option(5, "--top", "-n", help="Number of papers to process"),
     force: bool = typer.Option(False, "--force"),
 ) -> None:
-    """Discover papers on a topic and process them all."""
+    """Discover papers on a topic and process them all.
+
+    Args:
+        topic: Search topic to discover and process.
+        top: Number of papers to process.
+        force: Whether to force re-processing of already-processed papers.
+    """
     from ml_platform.discovery.pipeline import DiscoveryPipeline
     from ml_platform.processing.processor import PaperProcessor
 
@@ -253,7 +284,18 @@ def codegen_generate(
     model: str = typer.Option("", "--model", help="Specific model name (e.g. gpt-4o, claude-sonnet-4-20250514)"),
     output: str = typer.Option("", "--output", "-o", help="Output directory"),
 ) -> None:
-    """Generate code from a paper using DeepCode multi-agent pipeline."""
+    """Generate code from a paper using DeepCode multi-agent pipeline.
+
+    Args:
+        paper_id: Paper arXiv ID (e.g. ``2312.00752``).
+        mode: Code generation mode. One of "optimized" or "comprehensive".
+        provider: LLM provider. One of "openai", "anthropic", or "google".
+        model: Specific model name (e.g. ``gpt-4o``,
+            ``claude-sonnet-4-20250514``). Empty string uses the provider
+            default.
+        output: Output directory for generated files. Empty string uses
+            the default ``data/codegen`` directory.
+    """
     from ml_platform.codegen.deepcode_runner import DeepCodeConfig, DeepCodeRunner
 
     console.print(f"\n[bold blue]⚙️ Generating code for:[/] {paper_id}")
@@ -360,14 +402,12 @@ def status() -> None:
     console.print(f"  Without code: {stats['without_code']}")
     console.print(f"  By status:    {stats['by_status']}")
 
-
 @app.command("version")
 def version() -> None:
     """Show version."""
     from ml_platform import __version__
 
     console.print(f"[bold]ml-research-platform[/] v{__version__}")
-
 
 # ── Run commands (orchestration) ──────────────────────────────────────────
 
@@ -383,7 +423,20 @@ def run_paper(
     no_report: bool = typer.Option(False, "--no-report", help="Skip Notion reporting"),
     force: bool = typer.Option(False, "--force", help="Force re-processing"),
 ) -> None:
-    """Run the full pipeline on a single paper: download → process → codegen → push → report."""
+    """Run the full pipeline on a single paper.
+
+    Executes download → process → codegen → push → report.
+
+    Args:
+        paper_id: Paper arXiv ID (e.g. ``2312.00752``).
+        mode: Code generation mode. One of "optimized" or "comprehensive".
+        provider: LLM provider. One of "openai", "anthropic", or "google".
+        model: Specific model name. Empty string uses the provider default.
+        skip_codegen: Whether to skip the code generation step.
+        no_push: Whether to skip pushing to GitHub.
+        no_report: Whether to skip reporting to Notion.
+        force: Whether to force re-processing of already-processed papers.
+    """
     from ml_platform.orchestration.orchestrator import ResearchOrchestrator
 
     console.print(f"\n[bold blue]🚀 Full pipeline:[/] {paper_id}")
@@ -434,7 +487,18 @@ def run_topic(
     no_report: bool = typer.Option(False, "--no-report", help="Skip Notion reporting"),
     force: bool = typer.Option(False, "--force"),
 ) -> None:
-    """Discover papers on a topic and run the full pipeline."""
+    """Discover papers on a topic and run the full pipeline.
+
+    Args:
+        topic: Search topic to discover papers for.
+        top: Number of papers to process.
+        mode: Code generation mode.
+        provider: LLM provider.
+        skip_codegen: Whether to skip code generation.
+        no_push: Whether to skip GitHub push.
+        no_report: Whether to skip Notion reporting.
+        force: Whether to force re-processing.
+    """
     from ml_platform.orchestration.orchestrator import ResearchOrchestrator
 
     console.print(f"\n[bold blue]🚀 Full pipeline (topic):[/] {topic} (top {top})\n")
@@ -475,7 +539,16 @@ def run_daily(
     no_push: bool = typer.Option(False, "--no-push", help="Skip GitHub push"),
     no_report: bool = typer.Option(False, "--no-report", help="Skip Notion reporting"),
 ) -> None:
-    """Run daily pipeline for all configured topics."""
+    """Run daily pipeline for all configured topics.
+
+    Args:
+        top: Number of papers per topic to process.
+        mode: Code generation mode.
+        provider: LLM provider.
+        skip_codegen: Whether to skip code generation.
+        no_push: Whether to skip GitHub push.
+        no_report: Whether to skip Notion reporting.
+    """
     from ml_platform.config import config
     from ml_platform.orchestration.orchestrator import ResearchOrchestrator
 

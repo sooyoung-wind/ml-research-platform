@@ -1,4 +1,8 @@
-"""ML Research Platform — SQLite database layer."""
+"""ML Research Platform — SQLite database layer.
+
+Provides PapersDB, a SQLite-backed store for papers and pipeline state
+with upsert, query, and statistics capabilities.
+"""
 
 from __future__ import annotations
 
@@ -14,15 +18,33 @@ from ml_platform.models import Author, Paper, PaperSource, ProcessingStatus
 
 
 class PapersDB:
-    """SQLite-backed storage for papers and pipeline state."""
+    """SQLite-backed storage for papers and pipeline state.
+
+    Attributes:
+        db_path: Path to the SQLite database file.
+    """
 
     def __init__(self, db_path: Path | None = None):
+        """Initialize the database and create tables if needed.
+
+        Args:
+            db_path: Path to the SQLite database file. Defaults to
+                ``config.DB_PATH``.
+        """
         self.db_path = db_path or config.DB_PATH
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_db()
 
     @contextmanager
     def _conn(self) -> Generator[sqlite3.Connection, None, None]:
+        """Yield a database connection with WAL mode and foreign keys enabled.
+
+        Yields:
+            A sqlite3.Connection with row factory and pragmas configured.
+
+        Raises:
+            sqlite3.Error: If the database connection cannot be established.
+        """
         conn = sqlite3.connect(str(self.db_path))
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
@@ -37,6 +59,7 @@ class PapersDB:
             conn.close()
 
     def _init_db(self) -> None:
+        """Create database tables and indexes if they do not exist."""
         with self._conn() as conn:
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS papers (
@@ -87,7 +110,11 @@ class PapersDB:
             """)
 
     def upsert_paper(self, paper: Paper) -> None:
-        """Insert or update a paper."""
+        """Insert or update a paper.
+
+        Args:
+            paper: The Paper object to upsert.
+        """
         with self._conn() as conn:
             conn.execute(
                 """
@@ -139,13 +166,28 @@ class PapersDB:
             )
 
     def upsert_papers(self, papers: list[Paper]) -> int:
-        """Bulk upsert papers. Returns count of upserted papers."""
+        """Bulk upsert papers.
+
+        Args:
+            papers: List of Paper objects to upsert.
+
+        Returns:
+            Count of upserted papers.
+        """
         for paper in papers:
             self.upsert_paper(paper)
         return len(papers)
 
     def get_paper(self, paper_id: str, source: PaperSource) -> Paper | None:
-        """Get a paper by ID and source."""
+        """Get a paper by ID and source.
+
+        Args:
+            paper_id: The paper's primary ID.
+            source: The paper's source.
+
+        Returns:
+            The Paper object, or None if not found.
+        """
         with self._conn() as conn:
             row = conn.execute(
                 "SELECT * FROM papers WHERE paper_id = ? AND source = ?",
@@ -156,7 +198,14 @@ class PapersDB:
             return self._row_to_paper(row)
 
     def get_paper_by_arxiv(self, arxiv_id: str) -> Paper | None:
-        """Get a paper by arXiv ID."""
+        """Get a paper by arXiv ID.
+
+        Args:
+            arxiv_id: The arXiv identifier.
+
+        Returns:
+            The Paper object, or None if not found.
+        """
         with self._conn() as conn:
             row = conn.execute(
                 "SELECT * FROM papers WHERE arxiv_id = ?", (arxiv_id,)
@@ -172,7 +221,17 @@ class PapersDB:
         offset: int = 0,
         order_by: str = "composite_score DESC",
     ) -> list[Paper]:
-        """Query papers with optional filters."""
+        """Query papers with optional filters.
+
+        Args:
+            status: Filter by processing status.
+            limit: Maximum number of papers to return.
+            offset: Number of papers to skip.
+            order_by: SQL ORDER BY clause.
+
+        Returns:
+            List of matching Paper objects.
+        """
         query = "SELECT * FROM papers"
         params: list = []
 
@@ -188,7 +247,13 @@ class PapersDB:
             return [self._row_to_paper(r) for r in rows]
 
     def update_status(self, paper_id: str, source: PaperSource, status: ProcessingStatus) -> None:
-        """Update paper processing status."""
+        """Update paper processing status.
+
+        Args:
+            paper_id: The paper's primary ID.
+            source: The paper's source.
+            status: The new processing status.
+        """
         with self._conn() as conn:
             conn.execute(
                 "UPDATE papers SET status = ?, updated_at = ? WHERE paper_id = ? AND source = ?",
@@ -196,7 +261,15 @@ class PapersDB:
             )
 
     def paper_exists(self, paper_id: str, source: PaperSource) -> bool:
-        """Check if a paper already exists in the DB."""
+        """Check if a paper already exists in the DB.
+
+        Args:
+            paper_id: The paper's primary ID.
+            source: The paper's source.
+
+        Returns:
+            True if the paper exists.
+        """
         with self._conn() as conn:
             row = conn.execute(
                 "SELECT 1 FROM papers WHERE paper_id = ? AND source = ?",
@@ -205,7 +278,14 @@ class PapersDB:
             return row is not None
 
     def log_discovery(self, query: str, total_found: int, paper_ids: list[str], duration: float) -> None:
-        """Log a discovery run."""
+        """Log a discovery run.
+
+        Args:
+            query: The search query used.
+            total_found: Total number of papers found.
+            paper_ids: List of paper IDs discovered.
+            duration: Duration of the discovery in seconds.
+        """
         with self._conn() as conn:
             conn.execute(
                 "INSERT INTO discovery_log (query, total_found, paper_ids_json, duration_seconds, timestamp) VALUES (?, ?, ?, ?, ?)",
@@ -213,7 +293,11 @@ class PapersDB:
             )
 
     def get_stats(self) -> dict:
-        """Get database statistics."""
+        """Get database statistics.
+
+        Returns:
+            Dict with keys: total_papers, with_code, without_code, by_status.
+        """
         with self._conn() as conn:
             total = conn.execute("SELECT COUNT(*) FROM papers").fetchone()[0]
             by_status = dict(
@@ -229,6 +313,14 @@ class PapersDB:
 
     @staticmethod
     def _row_to_paper(row: sqlite3.Row) -> Paper:
+        """Convert a database row to a Paper model.
+
+        Args:
+            row: A sqlite3.Row from the papers table.
+
+        Returns:
+            A Paper instance populated from the row data.
+        """
         authors_data = json.loads(row["authors_json"]) if row["authors_json"] else []
         return Paper(
             paper_id=row["paper_id"],
@@ -256,6 +348,3 @@ class PapersDB:
             discovered_at=datetime.fromisoformat(row["discovered_at"]) if row["discovered_at"] else datetime.now(),
             updated_at=datetime.fromisoformat(row["updated_at"]) if row["updated_at"] else datetime.now(),
         )
-
-
-
