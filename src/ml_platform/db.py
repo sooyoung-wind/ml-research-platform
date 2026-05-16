@@ -108,6 +108,44 @@ class PapersDB:
                     timestamp TEXT
                 )
             """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS analysis_results (
+                    paper_id TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    analysis_json TEXT NOT NULL,
+                    summary TEXT,
+                    key_contributions_json TEXT,
+                    methodology_type TEXT,
+                    domain TEXT,
+                    model_used TEXT,
+                    status TEXT DEFAULT 'pending',
+                    analyzed_at TEXT,
+                    self_correction_applied INTEGER DEFAULT 0,
+                    correction_notes TEXT,
+                    PRIMARY KEY (paper_id, source)
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS entity_registry (
+                    canonical_id TEXT PRIMARY KEY,
+                    doi TEXT,
+                    arxiv_id TEXT,
+                    title TEXT,
+                    title_variants_json TEXT,
+                    source_ids_json TEXT,
+                    created_at TEXT,
+                    updated_at TEXT
+                )
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_entity_doi ON entity_registry(doi)
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_entity_arxiv ON entity_registry(arxiv_id)
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_analysis_status ON analysis_results(status)
+            """)
 
     def upsert_paper(self, paper: Paper) -> None:
         """Insert or update a paper.
@@ -291,6 +329,125 @@ class PapersDB:
                 "INSERT INTO discovery_log (query, total_found, paper_ids_json, duration_seconds, timestamp) VALUES (?, ?, ?, ?, ?)",
                 (query, total_found, json.dumps(paper_ids), duration, datetime.now().isoformat()),
             )
+
+    def save_analysis(self, paper_id: str, source: str, analysis: 'PaperAnalysis') -> None:
+        """Save paper analysis results."""
+        with self._conn() as conn:
+            conn.execute(
+                """
+                INSERT INTO analysis_results (
+                    paper_id, source, analysis_json, summary, key_contributions_json,
+                    methodology_type, domain, model_used, status, analyzed_at,
+                    self_correction_applied, correction_notes
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(paper_id, source) DO UPDATE SET
+                    analysis_json=excluded.analysis_json,
+                    summary=excluded.summary,
+                    key_contributions_json=excluded.key_contributions_json,
+                    methodology_type=excluded.methodology_type,
+                    domain=excluded.domain,
+                    model_used=excluded.model_used,
+                    status=excluded.status,
+                    analyzed_at=excluded.analyzed_at,
+                    self_correction_applied=excluded.self_correction_applied,
+                    correction_notes=excluded.correction_notes
+                """,
+                (
+                    paper_id,
+                    source,
+                    analysis.model_dump_json(),
+                    analysis.summary,
+                    json.dumps(analysis.key_contributions),
+                    analysis.methodology_type,
+                    analysis.domain,
+                    analysis.model_used,
+                    analysis.status.value,
+                    analysis.analyzed_at.isoformat(),
+                    1 if analysis.self_correction_applied else 0,
+                    analysis.correction_notes,
+                ),
+            )
+
+    def get_analysis(self, paper_id: str, source: str) -> dict | None:
+        """Get analysis results for a paper."""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM analysis_results WHERE paper_id = ? AND source = ?",
+                (paper_id, source),
+            ).fetchone()
+            if row is None:
+                return None
+            return dict(row)
+
+    def get_analysis_object(self, paper_id: str, source: str) -> 'PaperAnalysis | None':
+        """Get analysis results as a PaperAnalysis object."""
+        data = self.get_analysis(paper_id, source)
+        if data is None:
+            return None
+        from ml_platform.analysis.models import PaperAnalysis
+        return PaperAnalysis.model_validate_json(data['analysis_json'])
+
+    def has_analysis(self, paper_id: str, source: str) -> bool:
+        """Check if analysis exists for a paper."""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM analysis_results WHERE paper_id = ? AND source = ?",
+                (paper_id, source),
+            ).fetchone()
+            return row is not None
+
+    def register_entity(self, canonical_id: str, doi: str | None, arxiv_id: str | None, title: str, source_id: str) -> None:
+        """Register or update a canonical entity in the registry."""
+        with self._conn() as conn:
+            existing = conn.execute(
+                "SELECT source_ids_json FROM entity_registry WHERE canonical_id = ?",
+                (canonical_id,),
+            ).fetchone()
+
+            if existing:
+                source_ids = json.loads(existing['source_ids_json']) if existing['source_ids_json'] else []
+                if source_id not in source_ids:
+                    source_ids.append(source_id)
+                conn.execute(
+                    """UPDATE entity_registry SET
+                       source_ids_json=?, updated_at=?
+                       WHERE canonical_id=?""",
+                    (json.dumps(source_ids), datetime.now().isoformat(), canonical_id),
+                )
+            else:
+                conn.execute(
+                    """INSERT INTO entity_registry
+                       (canonical_id, doi, arxiv_id, title, source_ids_json, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        canonical_id,
+                        doi,
+                        arxiv_id,
+                        title,
+                        json.dumps([source_id]),
+                        datetime.now().isoformat(),
+                        datetime.now().isoformat(),
+                    ),
+                )
+
+    def resolve_entity(self, doi: str | None = None, arxiv_id: str | None = None) -> str | None:
+        """Look up a canonical ID by DOI or arXiv ID."""
+        with self._conn() as conn:
+            if doi:
+                row = conn.execute(
+                    "SELECT canonical_id FROM entity_registry WHERE doi = ?",
+                    (doi,),
+                ).fetchone()
+                if row:
+                    return row['canonical_id']
+            if arxiv_id:
+                row = conn.execute(
+                    "SELECT canonical_id FROM entity_registry WHERE arxiv_id = ?",
+                    (arxiv_id,),
+                ).fetchone()
+                if row:
+                    return row['canonical_id']
+        return None
 
     def get_stats(self) -> dict:
         """Get database statistics.

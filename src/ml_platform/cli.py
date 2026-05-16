@@ -58,6 +58,9 @@ app.add_typer(codegen_app, name="codegen")
 run_app = typer.Typer(help="Full pipeline orchestration commands")
 app.add_typer(run_app, name="run")
 
+analyze_app = typer.Typer(help="Paper analysis commands")
+app.add_typer(analyze_app, name="analyze")
+
 setup_app = typer.Typer(help="Setup and patching commands")
 app.add_typer(setup_app, name="setup")
 
@@ -631,6 +634,212 @@ def run_daily(
     console.print(
         f"\n  Total: {total_success} success, {total_failed} failed, {total_skipped} skipped"
     )
+
+
+# ── Analyze commands ──────────────────────────────────────────────────────
+
+
+@analyze_app.command("paper")
+def analyze_paper(
+    paper_id: str = typer.Argument(help="Paper arXiv ID (e.g. 2312.00752)"),
+    model: str = typer.Option(
+        DEFAULT_LLM_MODEL, "--model", "-m",
+        help="Ollama model for analysis (e.g. gemma4:31b-cloud)",
+    ),
+    no_self_correct: bool = typer.Option(
+        False, "--no-self-correct", help="Skip self-correction pass",
+    ),
+    force: bool = typer.Option(False, "--force", help="Re-analyze even if done"),
+    save: bool = typer.Option(True, "--save/--no-save", help="Save results to DB"),
+) -> None:
+    """Analyze a paper: extract 5W1H, strengths/weaknesses, references, evidence.
+
+    Runs the full analysis pipeline via Ollama LLM:
+    1. Download + parse paper (if not cached)
+    2. 5W1H extraction
+    3. Reference chain extraction
+    4. Evidence sentence mapping
+    5. Self-correction verification
+
+    Args:
+        paper_id: Paper arXiv ID (e.g. ``2312.00752``).
+        model: Ollama model name for analysis.
+        no_self_correct: Skip the self-correction pass.
+        force: Re-analyze even if analysis already exists.
+        save: Save analysis results to the database.
+    """
+    from ml_platform.analysis.analyzer import PaperAnalyzer
+    from ml_platform.db import PapersDB
+    from ml_platform.models import Paper, PaperSource
+    from ml_platform.processing.processor import PaperProcessor
+
+    source = "arxiv"
+    full_id = f"arxiv_{paper_id}"
+
+    # Check if already analyzed
+    db = PapersDB()
+    if not force and db.has_analysis(full_id, source):
+        existing = db.get_analysis(full_id, source)
+        if existing and existing.get("status") == "completed":
+            console.print(f"[yellow]Already analyzed: {paper_id}[/] (use --force to re-analyze)")
+            console.print(f"  Summary: {existing.get('summary', '')[:200]}")
+            return
+
+    # Ensure paper is processed (downloaded + parsed)
+    console.print(f"\n[bold blue]📊 Analyzing paper:[/] {paper_id}")
+    console.print(f"  Model: {model} | Self-correct: {not no_self_correct}\n")
+
+    paper = Paper(
+        paper_id=full_id,
+        arxiv_id=paper_id,
+        title=paper_id,
+        source=PaperSource.ARXIV,
+        pdf_url=f"https://arxiv.org/pdf/{paper_id}",
+    )
+
+    # Process paper if not already done
+    if not paper.parsed_content:
+        with console.status("[bold]Downloading & parsing paper..."):
+            processor = PaperProcessor()
+            proc_result = asyncio.run(processor.process_paper(paper, force=force))
+
+        if not proc_result.success:
+            console.print(f"[red]Processing failed: {proc_result.error}[/]")
+            raise typer.Exit(1)
+
+        console.print(
+            f"  Parsed: {proc_result.extracted.get('chars', 0):,} chars "
+            f"({proc_result.extracted.get('extraction_method', '?')})"
+        )
+
+    # Run analysis
+    def progress(stage: str, pct: float, msg: str) -> None:
+        bar_len = 30
+        filled = int(bar_len * pct / 100)
+        bar = "█" * filled + "░" * (bar_len - filled)
+        console.print(f"  [{bar}] {pct:5.1f}% {msg}")
+
+    analyzer = PaperAnalyzer(
+        model=model,
+        enable_self_correction=not no_self_correct,
+        progress_callback=progress,
+    )
+
+    try:
+        analysis = asyncio.run(analyzer.analyze(paper))
+    except Exception as e:
+        console.print(f"\n[bold red]❌ Analysis failed:[/] {e}")
+        raise typer.Exit(1)
+
+    # Display results
+    console.print("\n[bold green]✅ Analysis complete![/]\n")
+
+    # 5W1H
+    console.print("[bold cyan]── 5W1H ──[/]")
+    for key in ["who", "what", "when", "where", "why", "how"]:
+        val = getattr(analysis.five_w1h, key)
+        console.print(f"  [bold]{key.upper():>5}[/]  {val[:120]}{'...' if len(val) > 120 else ''}")
+
+    # Strengths / Weaknesses
+    console.print("\n[bold cyan]── Strengths ──[/]")
+    for s in analysis.sw.strengths:
+        console.print(f"  ✅ {s[:100]}{'...' if len(s) > 100 else ''}")
+
+    console.print("\n[bold cyan]── Weaknesses ──[/]")
+    for w in analysis.sw.weaknesses:
+        console.print(f"  ⚠️  {w[:100]}{'...' if len(w) > 100 else ''}")
+
+    console.print("\n[bold cyan]── Future Work ──[/]")
+    for fw in analysis.sw.future_work:
+        console.print(f"  🔮 {fw[:100]}{'...' if len(fw) > 100 else ''}")
+
+    # Summary
+    console.print(f"\n[bold cyan]── Summary ──[/]")
+    console.print(f"  {analysis.summary[:300]}{'...' if len(analysis.summary) > 300 else ''}")
+
+    # Stats
+    console.print(f"\n[dim]"
+                  f"References: {len(analysis.references)} | "
+                  f"Evidence: {len(analysis.evidence)} | "
+                  f"Self-corrected: {'yes' if analysis.self_correction_applied else 'no'} | "
+                  f"Model: {analysis.model_used}"
+                  f"[/dim]")
+
+    # Save to DB
+    if save:
+        db.save_analysis(full_id, source, analysis)
+        console.print(f"[dim]Saved to database[/dim]")
+
+        # Register paper entity
+        from ml_platform.analysis.reference_chain import canonical_paper_id
+        cid = canonical_paper_id(
+            doi=None,
+            arxiv_id=paper_id,
+            title=getattr(paper, "title", None),
+        )
+        db.register_entity(cid, None, paper_id, paper.title or paper_id, f"{full_id}/{source}")
+
+        # Register reference entities
+        for ref in analysis.references:
+            if ref.doi or ref.arxiv_id:
+                ref_cid = canonical_paper_id(ref.doi, ref.arxiv_id, ref.title)
+                db.register_entity(
+                    ref_cid, ref.doi, ref.arxiv_id,
+                    ref.title or ref.raw_text[:80],
+                    f"{full_id}/{source}",
+                )
+        console.print(f"[dim]Registered {len(analysis.references)} reference entities[/dim]")
+
+
+@analyze_app.command("show")
+def analyze_show(
+    paper_id: str = typer.Argument(help="Paper arXiv ID (e.g. 2312.00752)"),
+) -> None:
+    """Show existing analysis results for a paper.
+
+    Args:
+        paper_id: Paper arXiv ID (e.g. ``2312.00752``).
+    """
+    from ml_platform.analysis.models import PaperAnalysis
+    from ml_platform.db import PapersDB
+
+    db = PapersDB()
+    full_id = f"arxiv_{paper_id}"
+    analysis = db.get_analysis_object(full_id, "arxiv")
+
+    if analysis is None:
+        console.print(f"[yellow]No analysis found for {paper_id}[/]")
+        console.print("[dim]Run: ml-research analyze paper {paper_id}[/]")
+        return
+
+    console.print(f"\n[bold blue]📊 Analysis:[/] {paper_id}\n")
+
+    console.print("[bold cyan]── 5W1H ──[/]")
+    for key in ["who", "what", "when", "where", "why", "how"]:
+        val = getattr(analysis.five_w1h, key)
+        console.print(f"  [bold]{key.upper():>5}[/]  {val}")
+
+    console.print("\n[bold cyan]── Strengths ──[/]")
+    for s in analysis.sw.strengths:
+        console.print(f"  ✅ {s}")
+
+    console.print("\n[bold cyan]── Weaknesses ──[/]")
+    for w in analysis.sw.weaknesses:
+        console.print(f"  ⚠️  {w}")
+
+    console.print("\n[bold cyan]── Future Work ──[/]")
+    for fw in analysis.sw.future_work:
+        console.print(f"  🔮 {fw}")
+
+    console.print(f"\n[bold cyan]── Summary ──[/]")
+    console.print(f"  {analysis.summary}")
+
+    console.print(f"\n[dim]"
+                  f"References: {len(analysis.references)} | "
+                  f"Evidence: {len(analysis.evidence)} | "
+                  f"Model: {analysis.model_used} | "
+                  f"Self-corrected: {'yes' if analysis.self_correction_applied else 'no'}"
+                  f"[/dim]")
 
 
 # ── Setup commands ─────────────────────────────────────────────────────
