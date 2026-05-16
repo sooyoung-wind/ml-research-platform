@@ -76,9 +76,11 @@ class DeepCodeConfig:
     """
 
     # LLM provider: "openai" | "anthropic" | "google" | "ollama"
-    llm_provider: str = "openai"
+    # Default comes from ML_DEFAULT_LLM_PROVIDER env var (see .env.example)
+    llm_provider: str = ""
     # Model name (provider-specific)
-    model_name: str = "gpt-4o"
+    # Default comes from ML_DEFAULT_LLM_MODEL env var
+    model_name: str = ""
     # Planning model (can differ from implementation model)
     planning_model: str = ""
     # Enable CodeRAG reference mining (comprehensive mode)
@@ -125,6 +127,13 @@ class DeepCodeRunner:
                 if not provided.
         """
         self.config = dc_config or DeepCodeConfig()
+        # Fill empty provider/model from platform config (.env)
+        from ml_platform.config import DEFAULT_LLM_MODEL, DEFAULT_LLM_PROVIDER
+
+        if not self.config.llm_provider:
+            self.config.llm_provider = DEFAULT_LLM_PROVIDER
+        if not self.config.model_name:
+            self.config.model_name = DEFAULT_LLM_MODEL
         self._setup_dirs()
         self._write_secrets()
 
@@ -178,7 +187,7 @@ class DeepCodeRunner:
             main_config["openai"]["api_key"] = "ollama"
             main_config["openai"][
                 "default_model"
-            ] = self.config.model_name or "qwen3:8b"
+            ] = self.config.model_name
             secrets.setdefault("openai", {})["api_key"] = "ollama"
             with open(secrets_path, "w") as f:
                 yaml.dump(secrets, f, default_flow_style=False)
@@ -340,7 +349,7 @@ class DeepCodeRunner:
             main_config["openai"]["api_key"] = "ollama"
             main_config["openai"][
                 "default_model"
-            ] = self.config.model_name or "qwen3:8b"
+            ] = self.config.model_name
             # Write dummy openai key in secrets so get_api_keys finds it
             secrets.setdefault("openai", {})["api_key"] = "ollama"
             with open(os.path.join(tmpdir, "mcp_agent.secrets.yaml"), "w") as f:
@@ -437,8 +446,8 @@ async def generate_code(
     paper_id: str = "",
     paper_title: str = "",
     mode: str = "optimized",
-    llm_provider: str = "openai",
-    model_name: str = "gpt-4o",
+    llm_provider: str = "",
+    model_name: str = "",
     output_dir: str = "",
     progress_callback: Callable | None = None,
 ) -> CodeGenResult:

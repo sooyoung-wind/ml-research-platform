@@ -3,6 +3,9 @@
 Provides centralized configuration for API keys, rate limits,
 directory paths, and default settings used across the platform.
 
+All settings can be overridden via environment variables or a .env file
+in the project root. See .env.example for available options.
+
 Attributes:
     PROJECT_ROOT: Path to the project root directory.
 """
@@ -22,42 +25,21 @@ load_dotenv(PROJECT_ROOT / ".env")
 class APIConfig:
     """API keys and rate limit settings for external services.
 
-    Attributes:
-        SEMANTIC_SCHOLAR_API_KEY: API key for Semantic Scholar.
-        SEMANTIC_SCHOLAR_BASE_URL: Base URL for Semantic Scholar API.
-        SEMANTIC_SCHOLAR_RATE_LIMIT: Requests per second (with key: 10).
-        ARXIV_BASE_URL: Base URL for arXiv API.
-        ARXIV_RATE_LIMIT: Requests per second for arXiv.
-        HUGGINGFACE_PAPERS_BASE_URL: Base URL for HuggingFace Papers.
-        HUGGINGFACE_PAPERS_RATE_LIMIT: Requests per second for HuggingFace.
-        OPENALEX_BASE_URL: Base URL for OpenAlex API.
-        OPENALEX_MAILTO: Email for OpenAlex polite pool.
-        CROSSREF_BASE_URL: Base URL for CrossRef API.
-        CROSSREF_MAILTO: Email for CrossRef polite pool.
-        CORE_API_KEY: API key for CORE.
-        CORE_BASE_URL: Base URL for CORE API.
-        UNPAYWALL_EMAIL: Email for Unpaywall API.
-        GROBID_BASE_URL: Base URL for GROBID service.
-        GROBID_RATE_LIMIT: Requests per second for GROBID.
-        GROBID_TIMEOUT: Timeout in seconds for GROBID PDF processing.
-        OPENAI_API_KEY: API key for OpenAI.
-        OPENAI_MODEL: Default OpenAI model name.
-        ANTHROPIC_API_KEY: API key for Anthropic.
-        GOOGLE_API_KEY: API key for Google/Gemini.
+    All defaults can be overridden via environment variables.
     """
 
     # Semantic Scholar
     SEMANTIC_SCHOLAR_API_KEY: str = os.getenv("SEMANTIC_SCHOLAR_API_KEY", "")
     SEMANTIC_SCHOLAR_BASE_URL: str = "https://api.semanticscholar.org/graph/v1"
-    SEMANTIC_SCHOLAR_RATE_LIMIT: float = 1.0  # requests per second (with key: 10)
+    SEMANTIC_SCHOLAR_RATE_LIMIT: float = 1.0
 
     # arXiv
     ARXIV_BASE_URL: str = "https://export.arxiv.org/api/query"
-    ARXIV_RATE_LIMIT: float = 1.0  # generous, no auth needed
+    ARXIV_RATE_LIMIT: float = 1.0
 
-    # HuggingFace Papers (replaces defunct PapersWithCode)
+    # HuggingFace Papers
     HUGGINGFACE_PAPERS_BASE_URL: str = "https://huggingface.co"
-    HUGGINGFACE_PAPERS_RATE_LIMIT: float = 2.0  # no auth needed
+    HUGGINGFACE_PAPERS_RATE_LIMIT: float = 2.0
 
     # OpenAlex
     OPENALEX_BASE_URL: str = "https://api.openalex.org"
@@ -76,41 +58,43 @@ class APIConfig:
 
     # GROBID (PDF parsing)
     GROBID_BASE_URL: str = os.getenv("GROBID_BASE_URL", "http://localhost:8070")
-    GROBID_RATE_LIMIT: float = 1.0  # requests per second
-    GROBID_TIMEOUT: float = 120.0  # PDF processing can be slow
+    GROBID_RATE_LIMIT: float = 1.0
+    GROBID_TIMEOUT: float = 120.0
 
-    # OpenAI (code generation)
+    # OpenAI
     OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
-    OPENAI_MODEL: str = os.getenv("OPENAI_MODEL", "o3-mini")
+    OPENAI_MODEL: str = os.getenv("OPENAI_MODEL", "gpt-4o")
 
-    # Anthropic (code generation)
+    # Anthropic
     ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
 
-    # Google (code generation)
+    # Google / Gemini
     GOOGLE_API_KEY: str = os.getenv("GOOGLE_API_KEY", os.getenv("GEMINI_API_KEY", ""))
 
-    # Ollama (local code generation, no API key needed)
+    # Ollama (local inference, no API key needed)
     OLLAMA_BASE_URL: str = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
     OLLAMA_DEFAULT_MODEL: str = os.getenv("OLLAMA_DEFAULT_MODEL", "qwen3:8b")
 
 
-class AppConfig:
-    """Application-level settings for directories, defaults, and weights.
+# ─── Platform-wide defaults (env-configurable) ──────────────────────
 
-    Attributes:
-        PROJECT_ROOT: Path to the project root directory.
-        DATA_DIR: Path to the data directory.
-        PDF_DIR: Path to the PDF storage directory.
-        GENERATED_DIR: Path to the generated code output directory.
-        DB_PATH: Path to the SQLite database file.
-        DEFAULT_TOPICS: List of default research topics for discovery.
-        DEFAULT_ARXIV_CATEGORIES: Default arXiv categories for paper search.
-        DEFAULT_TOP_N: Default number of papers to retrieve.
-        WEIGHT_CITATIONS: Weight for citation count in ranking.
-        WEIGHT_RELEVANCE: Weight for relevance score in ranking.
-        WEIGHT_FRESHNESS: Weight for freshness in ranking.
-        WEIGHT_NO_CODE: Weight bonus for papers without code implementation.
-    """
+# LLM provider & model used across codegen, pipeline, CLI
+DEFAULT_LLM_PROVIDER: str = os.getenv("ML_DEFAULT_LLM_PROVIDER", "ollama")
+DEFAULT_LLM_MODEL: str = os.getenv(
+    "ML_DEFAULT_LLM_MODEL",
+    os.getenv("OLLAMA_DEFAULT_MODEL", "qwen3:8b"),
+)
+
+# Notion reporting
+NOTION_API_KEY: str = os.getenv("NOTION_API_KEY", "")
+NOTION_PARENT_PAGE_ID: str = os.getenv("NOTION_PARENT_PAGE_ID", "")
+
+# GitHub push
+GITHUB_TOKEN: str = os.getenv("GITHUB_TOKEN", "")
+
+
+class AppConfig:
+    """Application-level settings for directories, defaults, and weights."""
 
     PROJECT_ROOT: Path = PROJECT_ROOT
     DATA_DIR: Path = PROJECT_ROOT / "data"
@@ -133,7 +117,7 @@ class AppConfig:
     WEIGHT_CITATIONS: float = 0.3
     WEIGHT_RELEVANCE: float = 0.3
     WEIGHT_FRESHNESS: float = 0.2
-    WEIGHT_NO_CODE: float = 0.2  # bonus for papers without code impl
+    WEIGHT_NO_CODE: float = 0.2
 
 
 config = AppConfig()

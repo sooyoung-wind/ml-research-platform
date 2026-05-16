@@ -32,3 +32,4 @@ Thumbs.db
 htmlcov/
 .pytest_cache/
 data/codegen/.deepcode/
+.env

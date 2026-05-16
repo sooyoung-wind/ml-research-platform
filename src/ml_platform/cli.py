@@ -26,6 +26,9 @@ for _env_path in [
         load_dotenv(_env_path, override=False)
         break
 
+# Platform defaults from .env (must be after dotenv load)
+from ml_platform.config import DEFAULT_LLM_MODEL, DEFAULT_LLM_PROVIDER  # noqa: E402
+
 
 def _check_ollama() -> bool:
     """Check if Ollama server is running locally."""
@@ -306,8 +309,14 @@ def process_grobid_status() -> None:
 def codegen_generate(
     paper_id: str = typer.Argument(help="Paper arXiv ID (e.g. 2312.00752)"),
     mode: str = typer.Option("optimized", "--mode", "-m", help="Mode: optimized, comprehensive"),
-    provider: str = typer.Option("openai", "--provider", "-p", help="LLM provider: openai, anthropic, google"),
-    model: str = typer.Option("", "--model", help="Specific model name (e.g. gpt-4o, claude-sonnet-4-20250514)"),
+    provider: str = typer.Option(
+        DEFAULT_LLM_PROVIDER, "--provider", "-p",
+        help="LLM provider: openai, anthropic, google, ollama",
+    ),
+    model: str = typer.Option(
+        DEFAULT_LLM_MODEL, "--model",
+        help="Model name (e.g. gpt-4o, qwen3:8b, glm-5.1:cloud)",
+    ),
     output: str = typer.Option("", "--output", "-o", help="Output directory"),
 ) -> None:
     """Generate code from a paper using DeepCode multi-agent pipeline.
@@ -315,7 +324,7 @@ def codegen_generate(
     Args:
         paper_id: Paper arXiv ID (e.g. ``2312.00752``).
         mode: Code generation mode. One of "optimized" or "comprehensive".
-        provider: LLM provider. One of "openai", "anthropic", or "google".
+        provider:        LLM provider. One of "openai", "anthropic", "google", or "ollama".
         model: Specific model name (e.g. ``gpt-4o``,
             ``claude-sonnet-4-20250514``). Empty string uses the provider
             default.
@@ -445,7 +454,10 @@ def version() -> None:
 def run_paper(
     paper_id: str = typer.Argument(help="Paper arXiv ID (e.g. 2312.00752)"),
     mode: str = typer.Option("optimized", "--mode", "-m", help="Codegen mode: optimized, comprehensive"),
-    provider: str = typer.Option("openai", "--provider", "-p", help="LLM provider: openai, anthropic, google"),
+    provider: str = typer.Option(
+        DEFAULT_LLM_PROVIDER, "--provider", "-p",
+        help="LLM provider: openai, anthropic, google, ollama",
+    ),
     model: str = typer.Option("", "--model", help="Specific model name"),
     skip_codegen: bool = typer.Option(False, "--skip-codegen", help="Skip code generation"),
     no_push: bool = typer.Option(False, "--no-push", help="Skip GitHub push"),
@@ -459,7 +471,7 @@ def run_paper(
     Args:
         paper_id: Paper arXiv ID (e.g. ``2312.00752``).
         mode: Code generation mode. One of "optimized" or "comprehensive".
-        provider: LLM provider. One of "openai", "anthropic", or "google".
+        provider:        LLM provider. One of "openai", "anthropic", "google", or "ollama".
         model: Specific model name. Empty string uses the provider default.
         skip_codegen: Whether to skip the code generation step.
         no_push: Whether to skip pushing to GitHub.
@@ -510,7 +522,10 @@ def run_topic(
     topic: str = typer.Argument(help="Search topic"),
     top: int = typer.Option(5, "--top", "-n", help="Number of papers to process"),
     mode: str = typer.Option("optimized", "--mode", "-m", help="Codegen mode"),
-    provider: str = typer.Option("openai", "--provider", "-p", help="LLM provider"),
+    provider: str = typer.Option(
+        DEFAULT_LLM_PROVIDER, "--provider", "-p",
+        help="LLM provider: openai, anthropic, google, ollama",
+    ),
     skip_codegen: bool = typer.Option(False, "--skip-codegen", help="Skip code generation"),
     no_push: bool = typer.Option(False, "--no-push", help="Skip GitHub push"),
     no_report: bool = typer.Option(False, "--no-report", help="Skip Notion reporting"),
@@ -563,7 +578,10 @@ def run_topic(
 def run_daily(
     top: int = typer.Option(10, "--top", "-n", help="Papers per topic"),
     mode: str = typer.Option("optimized", "--mode", "-m", help="Codegen mode"),
-    provider: str = typer.Option("openai", "--provider", "-p", help="LLM provider"),
+    provider: str = typer.Option(
+        DEFAULT_LLM_PROVIDER, "--provider", "-p",
+        help="LLM provider: openai, anthropic, google, ollama",
+    ),
     skip_codegen: bool = typer.Option(False, "--skip-codegen", help="Skip code generation"),
     no_push: bool = typer.Option(False, "--no-push", help="Skip GitHub push"),
     no_report: bool = typer.Option(False, "--no-report", help="Skip Notion reporting"),
