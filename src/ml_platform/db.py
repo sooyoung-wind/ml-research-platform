@@ -1,0 +1,261 @@
+"""ML Research Platform — SQLite database layer."""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+from contextlib import contextmanager
+from datetime import datetime
+from pathlib import Path
+from typing import Generator
+
+from ml_platform.config import config
+from ml_platform.models import Author, Paper, PaperSource, ProcessingStatus
+
+
+class PapersDB:
+    """SQLite-backed storage for papers and pipeline state."""
+
+    def __init__(self, db_path: Path | None = None):
+        self.db_path = db_path or config.DB_PATH
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._init_db()
+
+    @contextmanager
+    def _conn(self) -> Generator[sqlite3.Connection, None, None]:
+        conn = sqlite3.connect(str(self.db_path))
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA foreign_keys=ON")
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def _init_db(self) -> None:
+        with self._conn() as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS papers (
+                    paper_id TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    doi TEXT,
+                    title TEXT NOT NULL,
+                    abstract TEXT,
+                    authors_json TEXT,
+                    published_date TEXT,
+                    venue TEXT,
+                    year INTEGER,
+                    citation_count INTEGER,
+                    relevance_score REAL,
+                    arxiv_id TEXT,
+                    url TEXT,
+                    pdf_url TEXT,
+                    code_url TEXT,
+                    pwc_id TEXT,
+                    categories_json TEXT,
+                    keywords_json TEXT,
+                    status TEXT DEFAULT 'discovered',
+                    local_pdf_path TEXT,
+                    parsed_content_json TEXT,
+                    composite_score REAL,
+                    discovered_at TEXT,
+                    updated_at TEXT,
+                    PRIMARY KEY (paper_id, source)
+                )
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_papers_status
+                ON papers(status)
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_papers_arxiv_id
+                ON papers(arxiv_id)
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS discovery_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    query TEXT NOT NULL,
+                    total_found INTEGER,
+                    paper_ids_json TEXT,
+                    duration_seconds REAL,
+                    timestamp TEXT
+                )
+            """)
+
+    def upsert_paper(self, paper: Paper) -> None:
+        """Insert or update a paper."""
+        with self._conn() as conn:
+            conn.execute(
+                """
+                INSERT INTO papers (
+                    paper_id, source, doi, title, abstract, authors_json,
+                    published_date, venue, year, citation_count, relevance_score,
+                    arxiv_id, url, pdf_url, code_url, pwc_id,
+                    categories_json, keywords_json, status, local_pdf_path,
+                    parsed_content_json, composite_score, discovered_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(paper_id, source) DO UPDATE SET
+                    doi=excluded.doi,
+                    title=excluded.title,
+                    abstract=excluded.abstract,
+                    authors_json=excluded.authors_json,
+                    citation_count=excluded.citation_count,
+                    relevance_score=excluded.relevance_score,
+                    code_url=excluded.code_url,
+                    composite_score=excluded.composite_score,
+                    status=excluded.status,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    paper.paper_id,
+                    paper.source.value,
+                    paper.doi,
+                    paper.title,
+                    paper.abstract,
+                    json.dumps([a.model_dump() for a in paper.authors]),
+                    paper.published_date.isoformat() if paper.published_date else None,
+                    paper.venue,
+                    paper.year,
+                    paper.citation_count,
+                    paper.relevance_score,
+                    paper.arxiv_id,
+                    paper.url,
+                    paper.pdf_url,
+                    paper.code_url,
+                    paper.pwc_id,
+                    json.dumps(paper.categories),
+                    json.dumps(paper.keywords),
+                    paper.status.value,
+                    paper.local_pdf_path,
+                    json.dumps(paper.parsed_content) if paper.parsed_content else None,
+                    paper.composite_score,
+                    paper.discovered_at.isoformat(),
+                    datetime.now().isoformat(),
+                ),
+            )
+
+    def upsert_papers(self, papers: list[Paper]) -> int:
+        """Bulk upsert papers. Returns count of upserted papers."""
+        for paper in papers:
+            self.upsert_paper(paper)
+        return len(papers)
+
+    def get_paper(self, paper_id: str, source: PaperSource) -> Paper | None:
+        """Get a paper by ID and source."""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM papers WHERE paper_id = ? AND source = ?",
+                (paper_id, source.value),
+            ).fetchone()
+            if row is None:
+                return None
+            return self._row_to_paper(row)
+
+    def get_paper_by_arxiv(self, arxiv_id: str) -> Paper | None:
+        """Get a paper by arXiv ID."""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM papers WHERE arxiv_id = ?", (arxiv_id,)
+            ).fetchone()
+            if row is None:
+                return None
+            return self._row_to_paper(row)
+
+    def get_papers(
+        self,
+        status: ProcessingStatus | None = None,
+        limit: int = 50,
+        offset: int = 0,
+        order_by: str = "composite_score DESC",
+    ) -> list[Paper]:
+        """Query papers with optional filters."""
+        query = "SELECT * FROM papers"
+        params: list = []
+
+        if status:
+            query += " WHERE status = ?"
+            params.append(status.value)
+
+        query += f" ORDER BY {order_by} LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+
+        with self._conn() as conn:
+            rows = conn.execute(query, params).fetchall()
+            return [self._row_to_paper(r) for r in rows]
+
+    def update_status(self, paper_id: str, source: PaperSource, status: ProcessingStatus) -> None:
+        """Update paper processing status."""
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE papers SET status = ?, updated_at = ? WHERE paper_id = ? AND source = ?",
+                (status.value, datetime.now().isoformat(), paper_id, source.value),
+            )
+
+    def paper_exists(self, paper_id: str, source: PaperSource) -> bool:
+        """Check if a paper already exists in the DB."""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM papers WHERE paper_id = ? AND source = ?",
+                (paper_id, source.value),
+            ).fetchone()
+            return row is not None
+
+    def log_discovery(self, query: str, total_found: int, paper_ids: list[str], duration: float) -> None:
+        """Log a discovery run."""
+        with self._conn() as conn:
+            conn.execute(
+                "INSERT INTO discovery_log (query, total_found, paper_ids_json, duration_seconds, timestamp) VALUES (?, ?, ?, ?, ?)",
+                (query, total_found, json.dumps(paper_ids), duration, datetime.now().isoformat()),
+            )
+
+    def get_stats(self) -> dict:
+        """Get database statistics."""
+        with self._conn() as conn:
+            total = conn.execute("SELECT COUNT(*) FROM papers").fetchone()[0]
+            by_status = dict(
+                conn.execute("SELECT status, COUNT(*) FROM papers GROUP BY status").fetchall()
+            )
+            with_code = conn.execute("SELECT COUNT(*) FROM papers WHERE code_url IS NOT NULL").fetchone()[0]
+            return {
+                "total_papers": total,
+                "with_code": with_code,
+                "without_code": total - with_code,
+                "by_status": by_status,
+            }
+
+    @staticmethod
+    def _row_to_paper(row: sqlite3.Row) -> Paper:
+        authors_data = json.loads(row["authors_json"]) if row["authors_json"] else []
+        return Paper(
+            paper_id=row["paper_id"],
+            source=PaperSource(row["source"]),
+            doi=row["doi"],
+            title=row["title"],
+            abstract=row["abstract"],
+            authors=[Author(**a) for a in authors_data],
+            published_date=datetime.fromisoformat(row["published_date"]) if row["published_date"] else None,
+            venue=row["venue"],
+            year=row["year"],
+            citation_count=row["citation_count"],
+            relevance_score=row["relevance_score"],
+            arxiv_id=row["arxiv_id"],
+            url=row["url"],
+            pdf_url=row["pdf_url"],
+            code_url=row["code_url"],
+            pwc_id=row["pwc_id"],
+            categories=json.loads(row["categories_json"]) if row["categories_json"] else [],
+            keywords=json.loads(row["keywords_json"]) if row["keywords_json"] else [],
+            status=ProcessingStatus(row["status"]),
+            local_pdf_path=row["local_pdf_path"],
+            parsed_content=json.loads(row["parsed_content_json"]) if row["parsed_content_json"] else None,
+            composite_score=row["composite_score"],
+            discovered_at=datetime.fromisoformat(row["discovered_at"]) if row["discovered_at"] else datetime.now(),
+            updated_at=datetime.fromisoformat(row["updated_at"]) if row["updated_at"] else datetime.now(),
+        )
+
+
+
