@@ -194,6 +194,10 @@ class DeepCodeRunner:
                         "command": "python",
                         "args": [str(tools_dir / "code_reference_indexer.py")],
                     },
+                    "document-segmentation": {
+                        "command": "python",
+                        "args": [str(tools_dir / "document_segmentation_server.py")],
+                    },
                 },
             },
         }
@@ -375,6 +379,10 @@ class DeepCodeRunner:
                     "code-reference-indexer": {
                         "command": "python",
                         "args": [str(tools_dir / "code_reference_indexer.py")],
+                    },
+                    "document-segmentation": {
+                        "command": "python",
+                        "args": [str(tools_dir / "document_segmentation_server.py")],
                     },
                 },
             },
