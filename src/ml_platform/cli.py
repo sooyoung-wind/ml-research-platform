@@ -665,6 +665,198 @@ def run_daily(
     )
 
 
+@run_app.command("e2e")
+def run_e2e(
+    topic: str = typer.Argument("knowledge graph reasoning", help="Research topic"),
+    top: int = typer.Option(5, "--top", "-n", help="Papers to discover"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show plan without executing"),
+    skip_discovery: bool = typer.Option(False, "--skip-discovery", help="Use existing papers only"),
+    skip_analysis: bool = typer.Option(False, "--skip-analysis", help="Skip 5W1H analysis"),
+    skip_graph: bool = typer.Option(False, "--skip-graph", help="Skip KG build"),
+    skip_map: bool = typer.Option(False, "--skip-map", help="Skip research map"),
+    skip_trend: bool = typer.Option(False, "--skip-trend", help="Skip trend analysis"),
+    skip_wiki: bool = typer.Option(False, "--skip-wiki", help="Skip wiki import"),
+    open_browser: bool = typer.Option(False, "--open/--no-open", help="Open results in browser"),
+    force: bool = typer.Option(False, "--force", help="Force re-processing"),
+) -> None:
+    """End-to-end pipeline: discover → analyze → graph → map → trend → wiki.
+
+    Runs the complete v0.2.0 pipeline from paper discovery through
+    knowledge base compilation in a single command.
+    """
+    import time
+    from ml_platform.db import PapersDB
+    from ml_platform.config import AppConfig
+
+    steps = []
+    if not skip_discovery:
+        steps.append("1. Discovery (arXiv search)")
+    if not skip_analysis:
+        steps.append("2. Analysis (5W1H + evidence)")
+    if not skip_graph:
+        steps.append("3. Knowledge Graph (graphqlite)")
+    if not skip_map:
+        steps.append("4. Research Map (pyvis)")
+    if not skip_trend:
+        steps.append("5. Trend Analysis")
+    if not skip_wiki:
+        steps.append("6. Wiki Import (OpenKB)")
+
+    console.print(Panel(
+        f"[bold]Topic:[/] {topic}\n"
+        f"[bold]Top N:[/] {top}\n"
+        f"[bold]Papers DB:[/] {AppConfig.DATA_DIR / 'papers.db'}\n\n"
+        + "\n".join(f"  [cyan]{s}[/]" for s in steps),
+        title="v0.2.0 E2E Pipeline",
+    ))
+
+    if dry_run:
+        console.print("[yellow]Dry run — showing plan only.[/]")
+        return
+
+    start_time = time.time()
+    results = {}
+
+    # ── Step 1: Discovery ──
+    if not skip_discovery:
+        console.print("\n[bold blue]══ Step 1: Discovery ══[/]")
+        with console.status("[bold]Searching arXiv..."):
+            from ml_platform.discovery.arxiv_client import ArxivClient
+            client = ArxivClient()
+            papers = asyncio.run(client.search_by_keyword(topic, max_results=top))
+        for p in papers:
+            console.print(f"  [green]+[/] {p.arxiv_id}: {(p.title or '')[:60]}...")
+        results["discovered"] = len(papers)
+
+    # ── Step 2: Analysis ──
+    if not skip_analysis:
+        console.print("\n[bold blue]══ Step 2: 5W1H Analysis ══[/]")
+        db = PapersDB()
+        papers = db.get_papers(limit=top)
+        analyzed = 0
+        for paper in papers:
+            aid = paper.arxiv_id or paper.paper_id
+            analysis_path = AppConfig.DATA_DIR / "analyses" / f"{aid}.json"
+            if analysis_path.exists() and not force:
+                console.print(f"  [dim]⏭ {aid} (already analyzed)[/dim]")
+                continue
+            try:
+                with console.status(f"[bold]Analyzing {aid}..."):
+                    from ml_platform.analysis.analyzer import PaperAnalyzer
+                    analyzer = PaperAnalyzer()
+                    analysis = asyncio.run(analyzer.analyze(paper))
+                analyzed += 1
+                console.print(f"  [green]✓[/] {aid}")
+            except Exception as e:
+                console.print(f"  [red]✗[/] {aid}: {e}")
+        results["analyzed"] = analyzed
+
+    # ── Step 3: Knowledge Graph ──
+    if not skip_graph:
+        console.print("\n[bold blue]══ Step 3: Knowledge Graph ══[/]")
+        from ml_platform.graph.knowledge_graph import KnowledgeGraph
+        try:
+            kg = KnowledgeGraph.open(topic)
+            db = PapersDB()
+            papers = db.get_papers(limit=100)
+            for paper in papers:
+                aid = paper.arxiv_id or paper.paper_id
+                analysis_path = AppConfig.DATA_DIR / "analyses" / f"{aid}.json"
+                if not analysis_path.exists():
+                    continue
+                kg.add_paper_node(
+                    paper_id=aid,
+                    title=paper.title or aid,
+                    year=paper.year,
+                )
+                for cat in (paper.categories or []):
+                    cat_id = cat.replace(" ", "-")
+                    kg.add_node("Category", cat_id, label=cat, name=cat)
+                    kg.add_edge(aid, cat_id, "BELONGS_TO")
+            kg.close()
+            stats = kg.get_stats()
+            results["graph_nodes"] = stats.node_count
+            results["graph_edges"] = stats.edge_count
+            console.print(f"  [green]✓[/] {stats.node_count} nodes, {stats.edge_count} edges")
+        except Exception as e:
+            console.print(f"  [red]✗[/] {e}")
+            results["graph_error"] = str(e)
+
+    # ── Step 4: Research Map ──
+    if not skip_map:
+        console.print("\n[bold blue]══ Step 4: Research Map ══[/]")
+        try:
+            from ml_platform.analysis.research_map import ResearchMapBuilder
+            rmb = ResearchMapBuilder()
+            map_result = rmb.build_from_papers("all")
+            map_path = AppConfig.DATA_DIR / "maps" / "map_all_papers.html"
+            results["map_path"] = str(map_path)
+            console.print(f"  [green]✓[/] {map_path}")
+            if open_browser:
+                import webbrowser
+                webbrowser.open(str(map_path))
+        except Exception as e:
+            console.print(f"  [red]✗[/] {e}")
+            results["map_error"] = str(e)
+
+    # ── Step 5: Trend Analysis ──
+    if not skip_trend:
+        console.print("\n[bold blue]══ Step 5: Trend Analysis ══[/]")
+        try:
+            from ml_platform.analysis.trends import TrendAnalyzer
+            ta = TrendAnalyzer()
+            report = ta.analyze()
+            # Format report
+            lines = [f"# Trend Report\n"]
+            lines.append(f"Total papers: {report.total_papers}")
+            lines.append(f"Year range: {report.year_range}")
+            if report.top_topics:
+                lines.append("\n## Top Topics")
+                for t in report.top_topics[:5]:
+                    lines.append(f"- {t}")
+            if hasattr(report, 'declining_topics') and report.declining_topics:
+                lines.append("\n## Declining Topics")
+                for t in report.declining_topics[:5]:
+                    lines.append(f"- {t}")
+            if report.research_gaps:
+                lines.append("\n## Research Gaps")
+                for g in report.research_gaps[:5]:
+                    lines.append(f"- {g}")
+            report_text = "\n".join(lines)
+            report_path = AppConfig.DATA_DIR / "trend_report.md"
+            report_path.write_text(report_text, encoding="utf-8")
+            results["trend_path"] = str(report_path)
+            console.print(f"  [green]✓[/] {report_path}")
+        except Exception as e:
+            console.print(f"  [red]✗[/] {e}")
+            results["trend_error"] = str(e)
+
+    # ── Step 6: Wiki Import ──
+    if not skip_wiki:
+        console.print("\n[bold blue]══ Step 6: Wiki Import ══[/]")
+        from ml_platform.wiki import WikiManager
+        wm = WikiManager()
+        if not wm.is_initialized:
+            console.print("  [dim]Initializing wiki...[/]")
+            wm.init()
+        import_result = wm.import_all_papers(limit=top)
+        results["wiki_imported"] = import_result["imported"]
+        results["wiki_skipped"] = import_result["skipped"]
+        console.print(
+            f"  [green]✓[/] {import_result['imported']} imported, "
+            f"{import_result['skipped']} skipped"
+        )
+
+    # ── Summary ──
+    duration = time.time() - start_time
+    console.print(Panel(
+        f"[bold green]E2E Pipeline Complete![/]\n\n"
+        f"[bold]Duration:[/] {duration:.1f}s\n"
+        + "\n".join(f"  [bold]{k}:[/] {v}" for k, v in results.items()),
+        title="Summary",
+    ))
+
+
 # ── Analyze commands ──────────────────────────────────────────────────────
 
 

@@ -1,6 +1,6 @@
 [project]
 name = "ml-research-platform"
-version = "0.1.0"
+version = "0.2.0"
 description = "Autonomous ML Research Infrastructure: Paper Discovery → Code Generation Pipeline"
 readme = "README.md"
 requires-python = ">=3.11"
