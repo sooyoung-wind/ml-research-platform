@@ -313,12 +313,13 @@ class DeepCodeRunner:
             self._prepare_deepcode_input(paper_path, tmpdir)
 
             original_cwd = os.getcwd()
+            output_dir_abs = os.path.abspath(output_dir)
             try:
                 os.chdir(tmpdir)
                 pipeline_result = await self._execute_deepcode_pipeline(
                     tmpdir, tmpdir, mode, progress_callback,
                 )
-                return self._copy_generated_output(tmpdir, output_dir)
+                return self._copy_generated_output(tmpdir, output_dir_abs)
             finally:
                 os.chdir(original_cwd)
 
@@ -456,17 +457,40 @@ class DeepCodeRunner:
         """
         lab_dir = os.path.join(tmpdir, "deepcode_lab")
         if not os.path.isdir(lab_dir):
+            print(f"[WARN] deepcode_lab not found in {tmpdir}")
             return False
+
+        # Debug: list what's inside deepcode_lab
+        gen_code_dir = os.path.join(tmpdir, "deepcode_lab", "papers", "1", "generate_code")
+        if os.path.isdir(gen_code_dir):
+            gen_files = []
+            for root, _, fnames in os.walk(gen_code_dir):
+                for fn in fnames:
+                    rel = os.path.relpath(os.path.join(root, fn), gen_code_dir)
+                    gen_files.append(rel)
+            print(f"[DEBUG] Found {len(gen_files)} files in generate_code/: {gen_files[:10]}")
+        else:
+            print(f"[WARN] generate_code dir not found: {gen_code_dir}")
+            for root, dirs, fnames in os.walk(lab_dir):
+                for fn in fnames:
+                    print(f"  lab_file: {os.path.relpath(os.path.join(root, fn), lab_dir)}")
 
         for item in os.listdir(lab_dir):
             src = os.path.join(lab_dir, item)
             dst = os.path.join(output_dir, item)
+            print(f"[DEBUG] copy: {src} -> {dst} (isdir={os.path.isdir(src)})")
             if os.path.isdir(src):
                 if os.path.exists(dst):
                     shutil.rmtree(dst)
                 shutil.copytree(src, dst)
             else:
                 shutil.copy2(src, dst)
+        # Verify copy
+        copied = []
+        for root, _, fnames in os.walk(output_dir):
+            for fn in fnames:
+                copied.append(os.path.relpath(os.path.join(root, fn), output_dir))
+        print(f"[DEBUG] Copied {len(copied)} files to {output_dir}: {copied[:10]}")
         return True
 
     @staticmethod
