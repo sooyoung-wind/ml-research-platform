@@ -106,154 +106,217 @@ def _detect_communities(
     return {n: comm_map[community[n]] for n in nodes}
 
 
-# ── Detail panel HTML/JS ────────────────────────────────────────────
+# ── Detail panel HTML/JS (Tailwind CSS) ────────────────────────────
+
+TAILWIND_CDN = """<script src="https://cdn.tailwindcss.com"></script>
+<script>
+tailwind.config = {
+  theme: {
+    extend: {
+      colors: {
+        dark: { 900: '#0f0f1a', 800: '#161625', 700: '#1e1e35', 600: '#2a2a4e' },
+        accent: { cyan: '#4ECDC4', yellow: '#FFEAA7', blue: '#45B7D1', red: '#FF6B6B' },
+      },
+      fontFamily: { mono: ['JetBrains Mono', 'Fira Code', 'monospace'] },
+    },
+  },
+};
+</script>
+"""
 
 DETAIL_PANEL_CSS = """
 <style>
+  /* ── Detail panel slide-in ── */
   #detail-panel {
-    position: fixed;
-    top: 0;
-    right: -520px;
-    width: 500px;
-    height: 100vh;
-    background: #16213e;
-    border-left: 2px solid #4ECDC4;
-    padding: 20px;
-    overflow-y: auto;
+    position: fixed; top: 0; right: -540px; width: 520px; height: 100vh;
+    transition: right 0.35s cubic-bezier(0.4, 0, 0.2, 1);
     z-index: 1000;
-    transition: right 0.3s ease;
-    font-family: 'Courier New', monospace;
-    color: #e0e0e0;
   }
   #detail-panel.open { right: 0; }
-  #detail-panel .close-btn {
-    position: absolute; top: 10px; right: 15px;
-    background: #e74c3c; color: white; border: none;
-    border-radius: 50%; width: 28px; height: 28px;
-    cursor: pointer; font-size: 14px; font-weight: bold;
+
+  /* ── Overlay for mobile feel ── */
+  #detail-overlay {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.4);
+    z-index: 999; opacity: 0; pointer-events: none;
+    transition: opacity 0.3s ease;
   }
-  #detail-panel .close-btn:hover { background: #c0392b; }
-  #detail-panel h3 {
-    color: #4ECDC4; margin: 0 0 12px 0;
-    padding-bottom: 8px; border-bottom: 1px solid #333;
-    padding-right: 35px;
-  }
-  #detail-panel .meta { font-size: 12px; color: #888; margin-bottom: 10px; }
-  #detail-panel .section {
-    margin: 12px 0; padding: 10px;
-    background: #1a1a2e; border-radius: 6px;
-  }
-  #detail-panel .section-title {
-    color: #FFEAA7; font-weight: bold;
-    font-size: 13px; margin-bottom: 6px;
-  }
-  #detail-panel .content { font-size: 12px; line-height: 1.7; }
-  #detail-panel .tag {
-    display: inline-block; background: #2a2a4e; color: #4ECDC4;
-    padding: 2px 8px; border-radius: 10px; margin: 2px;
-    font-size: 11px;
-  }
-  #detail-panel .badge {
-    display: inline-block; padding: 2px 10px; border-radius: 10px;
-    font-size: 11px; font-weight: bold; margin-right: 5px;
-  }
-  #detail-panel .badge-paper { background: #E74C3C; color: white; }
-  #detail-panel .badge-author { background: #3498DB; color: white; }
-  #detail-panel .badge-method { background: #2ECC71; color: white; }
-  #detail-panel .badge-concept { background: #9B59B6; color: white; }
-  #detail-panel .badge-institution { background: #1ABC9C; color: white; }
-  #detail-panel .badge-venue { background: #E67E22; color: white; }
-  #detail-panel .badge-category { background: #34495E; color: #e0e0e0; }
-  #detail-panel a { color: #45B7D1; text-decoration: none; }
-  #detail-panel a:hover { text-decoration: underline; }
+  #detail-overlay.open { opacity: 1; pointer-events: auto; }
+
+  /* ── Scrollbar styling ── */
+  #detail-panel::-webkit-scrollbar { width: 6px; }
+  #detail-panel::-webkit-scrollbar-track { background: #161625; }
+  #detail-panel::-webkit-scrollbar-thumb { background: #4ECDC4; border-radius: 3px; }
+
+  /* ── pyvis canvas padding for panel ── */
+  body { margin: 0; overflow: hidden; }
 </style>
 """
 
 DETAIL_PANEL_HTML = """
-<div id="detail-panel">
-  <button class="close-btn" onclick="closeDetail()">&times;</button>
-  <div id="detail-content">
-    <p style="color:#888;">Click a node to see details</p>
+<!-- Dark overlay -->
+<div id="detail-overlay" onclick="closeDetail()"></div>
+
+<!-- Detail side panel -->
+<div id="detail-panel" class="bg-dark-800 border-l-2 border-accent-cyan font-mono text-gray-200 overflow-y-auto">
+  <div id="detail-content" class="p-6">
+    <div class="flex flex-col items-center justify-center h-48 text-gray-500">
+      <svg class="w-10 h-10 mb-3 opacity-30" fill="currentColor" viewBox="0 0 20 20">
+        <path d="M10 2a8 8 0 100 16 8 8 0 000-16zm1 11H9v-2h2v2zm0-4H9V5h2v4z"/>
+      </svg>
+      <p class="text-sm">Click a node to see details</p>
+    </div>
   </div>
 </div>
 """
 
 DETAIL_PANEL_JS = """
 <script>
-// Node detail data injected from Python
 const NODE_DETAILS = __NODE_DATA__;
+
+// Icon SVGs for each type
+const TYPE_ICONS = {
+  Paper: '<svg class="w-4 h-4 inline mr-1" fill="currentColor" viewBox="0 0 20 20"><path d="M9 2a1 1 0 000 2h2a1 1 0 100-2H9z"/><path fill-rule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4z" clip-rule="evenodd"/></svg>',
+  Category: '<svg class="w-4 h-4 inline mr-1" fill="currentColor" viewBox="0 0 20 20"><path d="M2 6a2 2 0 012-2h5l2 2h5a2 2 0 012 2v6a2 2 0 01-2 2H4a2 2 0 01-2-2V6z"/></svg>',
+  Author: '<svg class="w-4 h-4 inline mr-1" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 9a3 3 0 100-6 3 3 0 000 6zm-7 9a7 7 0 1114 0H3z" clip-rule="evenodd"/></svg>',
+  Concept: '<svg class="w-4 h-4 inline mr-1" fill="currentColor" viewBox="0 0 20 20"><path d="M11 3a1 1 0 10-2 0v1a1 1 0 102 0V3zM15.657 5.757a1 1 0 00-1.414-1.414l-.707.707a1 1 0 001.414 1.414l.707-.707zM18 10a1 1 0 01-1 1h-1a1 1 0 110-2h1a1 1 0 011 1zM5.05 6.464A1 1 0 106.464 5.05l-.707-.707a1 1 0 00-1.414 1.414l.707.707zM3 10a1 1 0 011-1h1a1 1 0 110 2H4a1 1 0 01-1-1z"/><path fill-rule="evenodd" d="M10 6a4 4 0 100 8 4 4 0 000-8z" clip-rule="evenodd"/></svg>',
+  Institution: '<svg class="w-4 h-4 inline mr-1" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M4 4a2 2 0 012-2h8a2 2 0 012 2v12l-6-3-6 3V4z" clip-rule="evenodd"/></svg>',
+  Method: '<svg class="w-4 h-4 inline mr-1" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M11.3 1.046A1 1 0 0112 2v5h4a1 1 0 01.82 1.573l-7 10A1 1 0 018 18v-5H4a1 1 0 01-.82-1.573l7-10a1 1 0 011.12-.38z" clip-rule="evenodd"/></svg>',
+  Venue: '<svg class="w-4 h-4 inline mr-1" fill="currentColor" viewBox="0 0 20 20"><path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z"/></svg>',
+};
+
+const BADGE_COLORS = {
+  Paper:       'bg-red-500/80 text-white',
+  Category:    'bg-gray-600 text-gray-200',
+  Author:      'bg-blue-500/80 text-white',
+  Concept:     'bg-purple-500/80 text-white',
+  Institution: 'bg-teal-500/80 text-white',
+  Method:      'bg-green-500/80 text-white',
+  Venue:       'bg-orange-500/80 text-white',
+};
+
+function esc(str) {
+  const d = document.createElement('div');
+  d.textContent = str;
+  return d.innerHTML;
+}
 
 function showDetail(nodeId) {
   const data = NODE_DETAILS[nodeId];
   if (!data) return;
   const panel = document.getElementById('detail-panel');
   const content = document.getElementById('detail-content');
-  let html = '';
+  let h = '';
 
-  // Badge + Title
-  const badgeClass = 'badge-' + (data.type || 'paper').toLowerCase();
-  html += '<h3><span class="badge ' + badgeClass + '">' + (data.type || 'Node') + '</span> ' + (data.title || nodeId) + '</h3>';
-  html += '<div class="meta">' + (data.meta || '') + '</div>';
+  // ── Close button ──
+  h += '<button onclick="closeDetail()" class="absolute top-3 right-3 w-8 h-8 rounded-full bg-red-500/80 hover:bg-red-600 text-white flex items-center justify-center text-sm font-bold transition-colors">&times;</button>';
 
-  // Abstract / Description
+  // ── Header: badge + title ──
+  const icon = TYPE_ICONS[data.type] || '';
+  const badge = BADGE_COLORS[data.type] || 'bg-gray-600 text-gray-200';
+  h += '<div class="mb-4 pr-10">';
+  h += '<span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-bold ' + badge + '">';
+  h += icon + ' ' + esc(data.type || 'Node') + '</span>';
+  h += '<h3 class="mt-2 text-lg font-semibold text-accent-cyan leading-snug">' + esc(data.title || nodeId) + '</h3>';
+  h += '<p class="mt-1 text-xs text-gray-500">' + esc(data.meta || '') + '</p>';
+  h += '</div>';
+
+  // ── Divider ──
+  h += '<hr class="border-dark-600 mb-4">';
+
+  // ── Abstract ──
   if (data.abstract) {
-    html += '<div class="section"><div class="section-title">Abstract</div><div class="content">' + data.abstract + '</div></div>';
-  }
-  if (data.description) {
-    html += '<div class="section"><div class="section-title">Description</div><div class="content">' + data.description + '</div></div>';
+    h += '<div class="mb-4 bg-dark-700 rounded-lg p-3 border border-dark-600">';
+    h += '<h4 class="text-xs font-bold text-accent-yellow uppercase tracking-wider mb-2">Abstract</h4>';
+    h += '<p class="text-sm text-gray-300 leading-relaxed">' + esc(data.abstract) + '</p>';
+    h += '</div>';
   }
 
-  // Authors
+  // ── Description ──
+  if (data.description && !data.abstract) {
+    h += '<div class="mb-4 bg-dark-700 rounded-lg p-3 border border-dark-600">';
+    h += '<h4 class="text-xs font-bold text-accent-yellow uppercase tracking-wider mb-2">Description</h4>';
+    h += '<p class="text-sm text-gray-300 leading-relaxed">' + esc(data.description) + '</p>';
+    h += '</div>';
+  }
+
+  // ── Authors ──
   if (data.authors && data.authors.length > 0) {
-    html += '<div class="section"><div class="section-title">Authors</div><div class="content">' + data.authors.join(', ') + '</div></div>';
+    h += '<div class="mb-4">';
+    h += '<h4 class="text-xs font-bold text-accent-yellow uppercase tracking-wider mb-2">Authors</h4>';
+    h += '<div class="flex flex-wrap gap-1">';
+    data.authors.forEach(function(a) {
+      h += '<span class="inline-flex items-center bg-blue-500/20 text-blue-300 px-2 py-0.5 rounded-full text-xs">' + esc(a) + '</span>';
+    });
+    h += '</div></div>';
   }
 
-  // Categories / Keywords
+  // ── Categories ──
   if (data.categories && data.categories.length > 0) {
-    html += '<div class="section"><div class="section-title">Categories</div><div class="content">';
-    data.categories.forEach(function(c) { html += '<span class="tag">' + c + '</span>'; });
-    html += '</div></div>';
+    h += '<div class="mb-4">';
+    h += '<h4 class="text-xs font-bold text-accent-yellow uppercase tracking-wider mb-2">Categories</h4>';
+    h += '<div class="flex flex-wrap gap-1">';
+    data.categories.forEach(function(c) {
+      h += '<span class="inline-flex items-center bg-accent-cyan/20 text-accent-cyan px-2.5 py-0.5 rounded-full text-xs font-medium">' + esc(c) + '</span>';
+    });
+    h += '</div></div>';
   }
+
+  // ── Keywords ──
   if (data.keywords && data.keywords.length > 0) {
-    html += '<div class="section"><div class="section-title">Keywords</div><div class="content">';
-    data.keywords.forEach(function(k) { html += '<span class="tag">' + k + '</span>'; });
-    html += '</div></div>';
+    h += '<div class="mb-4">';
+    h += '<h4 class="text-xs font-bold text-accent-yellow uppercase tracking-wider mb-2">Keywords</h4>';
+    h += '<div class="flex flex-wrap gap-1">';
+    data.keywords.forEach(function(k) {
+      h += '<span class="inline-flex items-center bg-purple-500/20 text-purple-300 px-2 py-0.5 rounded-full text-xs">' + esc(k) + '</span>';
+    });
+    h += '</div></div>';
   }
 
-  // Related papers
+  // ── Related papers ──
   if (data.related && data.related.length > 0) {
-    html += '<div class="section"><div class="section-title">Related (' + data.related.length + ')</div><div class="content" style="max-height:200px;overflow-y:auto;">';
-    data.related.forEach(function(r) { html += '<div style="margin:3px 0;padding:3px 6px;background:#2a2a4e;border-radius:3px;">' + r + '</div>'; });
-    html += '</div></div>';
+    h += '<div class="mb-4">';
+    h += '<h4 class="text-xs font-bold text-accent-yellow uppercase tracking-wider mb-2">Related <span class="text-gray-500">(' + data.related.length + ')</span></h4>';
+    h += '<div class="max-h-48 overflow-y-auto space-y-1 pr-1">';
+    data.related.forEach(function(r) {
+      h += '<div class="bg-dark-700 border border-dark-600 rounded px-3 py-1.5 text-xs text-gray-300 hover:border-accent-cyan/40 transition-colors">' + esc(r) + '</div>';
+    });
+    h += '</div></div>';
   }
 
-  // Links
+  // ── URL link ──
   if (data.url) {
-    html += '<div class="section"><div class="section-title">Links</div><div class="content"><a href="' + data.url + '" target="_blank">' + data.url + '</a></div></div>';
+    h += '<div class="mb-4">';
+    h += '<h4 class="text-xs font-bold text-accent-yellow uppercase tracking-wider mb-2">Link</h4>';
+    h += '<a href="' + esc(data.url) + '" target="_blank" class="inline-flex items-center text-accent-blue hover:underline text-sm">';
+    h += '<svg class="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/></svg>';
+    h += esc(data.url) + '</a></div>';
   }
 
-  // Raw properties
+  // ── Properties table ──
   if (data.extra && Object.keys(data.extra).length > 0) {
-    html += '<div class="section"><div class="section-title">Properties</div><div class="content"><table style="width:100%;font-size:11px;">';
+    h += '<div class="mb-4">';
+    h += '<h4 class="text-xs font-bold text-accent-yellow uppercase tracking-wider mb-2">Properties</h4>';
+    h += '<table class="w-full text-xs">';
     for (const [k, v] of Object.entries(data.extra)) {
-      if (v && v !== 'None' && v !== 'null') {
-        html += '<tr><td style="color:#888;padding:2px 8px 2px 0;">' + k + '</td><td>' + v + '</td></tr>';
+      if (v && v !== 'None' && v !== 'null' && v !== '') {
+        h += '<tr class="border-b border-dark-600"><td class="py-1.5 pr-4 text-gray-500 whitespace-nowrap">' + esc(k) + '</td><td class="py-1.5 text-gray-300">' + esc(String(v)) + '</td></tr>';
       }
     }
-    html += '</table></div></div>';
+    h += '</table></div>';
   }
 
-  content.innerHTML = html;
+  content.innerHTML = h;
   panel.classList.add('open');
+  document.getElementById('detail-overlay').classList.add('open');
 }
 
 function closeDetail() {
   document.getElementById('detail-panel').classList.remove('open');
+  document.getElementById('detail-overlay').classList.remove('open');
 }
 
-// Bind click events to pyvis network
+// Bind click events
 function bindClickEvents() {
-  // pyvis stores network in window.network
   if (typeof network !== 'undefined') {
     network.on('click', function(params) {
       if (params.nodes && params.nodes.length > 0) {
@@ -265,6 +328,11 @@ function bindClickEvents() {
   }
 }
 setTimeout(bindClickEvents, 1000);
+
+// ESC key to close
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'Escape') closeDetail();
+});
 </script>
 """
 
@@ -292,8 +360,8 @@ class ResearchMapBuilder:
         details_json = json.dumps(node_details, ensure_ascii=False, default=str)
         js_with_data = DETAIL_PANEL_JS.replace("__NODE_DATA__", details_json)
 
-        # Inject before </head> and </body>
-        html = html.replace("</head>", DETAIL_PANEL_CSS + "\n</head>")
+        # Inject: Tailwind CDN + CSS before </head>, HTML + JS before </body>
+        html = html.replace("</head>", TAILWIND_CDN + DETAIL_PANEL_CSS + "\n</head>")
         html = html.replace("</body>", DETAIL_PANEL_HTML + "\n" + js_with_data + "\n</body>")
         html_path.write_text(html)
 
@@ -437,28 +505,36 @@ class ResearchMapBuilder:
         output_path = self.data_dir / f"map_{topic}.html"
         net.save_graph(str(output_path))
 
-        # Add legend header
-        legend_items = []
+        # Add legend header (Tailwind)
+        legend_items_html = ""
         for c in clusters:
             kw = ", ".join(c.keywords[:3])
-            legend_items.append(
-                f'<span style="color:{c.color};">&#9679;</span> '
-                f"<b>{c.label}</b> ({c.size}) — {kw}"
+            legend_items_html += (
+                f'<div class="flex items-center gap-2">'
+                f'<span class="w-2.5 h-2.5 rounded-full inline-block" style="background:{c.color};"></span>'
+                f'<span class="text-xs text-gray-300"><b>{c.label}</b> ({c.size}) — {kw}</span>'
+                f'</div>'
             )
 
         header_html = f"""
-        <div style="background:#16213e;padding:15px;margin:10px;border-radius:8px;color:#e0e0e0;font-family:monospace;">
-          <h2 style="margin:0 0 10px 0;color:#4ECDC4;">Research Map: {topic}</h2>
-          <div style="font-size:12px;">
-            <b>Papers:</b> {result.total_papers} | <b>Nodes:</b> {stats.node_count} |
-            <b>Edges:</b> {result.edges} | <b>Clusters:</b> {len(clusters)}
+        <div class="bg-dark-800 p-4 m-3 rounded-xl border border-dark-600 font-mono text-gray-200">
+          <div class="flex items-center gap-3 mb-3">
+            <svg class="w-6 h-6 text-accent-cyan" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7"/>
+            </svg>
+            <h2 class="text-lg font-bold text-accent-cyan">Research Map: {topic}</h2>
           </div>
-          <hr style="border-color:#333;">
-          <div style="font-size:11px;line-height:1.6;">{"<br>".join(legend_items)}</div>
-          <hr style="border-color:#333;">
-          <div style="font-size:10px;color:#888;">
-            Click any node to see full details | Scroll to zoom, drag to move
+          <div class="flex gap-4 text-xs text-gray-400 mb-3">
+            <span><b class="text-gray-200">Papers:</b> {result.total_papers}</span>
+            <span><b class="text-gray-200">Nodes:</b> {stats.node_count}</span>
+            <span><b class="text-gray-200">Edges:</b> {result.edges}</span>
+            <span><b class="text-gray-200">Clusters:</b> {len(clusters)}</span>
           </div>
+          <hr class="border-dark-600 mb-3">
+          <div class="space-y-1">{legend_items_html}</div>
+          <hr class="border-dark-600 mt-3 mb-2">
+          <p class="text-[10px] text-gray-500">Click any node to see full details &middot; Scroll to zoom &middot; ESC to close panel</p>
         </div>
         """
         html = output_path.read_text()
@@ -632,26 +708,39 @@ class ResearchMapBuilder:
         output_path = self.data_dir / f"map_{topic}.html"
         net.save_graph(str(output_path))
 
-        # Header + legend
-        legend_items = []
+        # Header + legend (Tailwind)
+        legend_items_html = ""
         for c in result.clusters:
             kw = ", ".join(c.keywords)
-            legend_items.append(
-                f'<span style="color:{c.color};">&#9679;</span> '
-                f"<b>{c.label}</b> ({c.size} cats) — {kw}"
+            legend_items_html += (
+                f'<div class="flex items-center gap-2">'
+                f'<span class="w-2.5 h-2.5 rounded-full inline-block" style="background:{c.color};"></span>'
+                f'<span class="text-xs text-gray-300"><b>{c.label}</b> ({c.size} cats) — {kw}</span>'
+                f'</div>'
             )
         header_html = f"""
-        <div style="background:#16213e;padding:15px;margin:10px;border-radius:8px;color:#e0e0e0;font-family:monospace;">
-          <h2 style="margin:0 0 10px 0;color:#4ECDC4;">Research Landscape: {topic}</h2>
-          <div style="font-size:12px;">
-            <b>Papers:</b> {result.total_papers} | <b>Categories:</b> {len(all_cats)} |
-            <b>Edges:</b> {result.edges} | <b>Clusters:</b> {len(result.clusters)}
+        <div class="bg-dark-800 p-4 m-3 rounded-xl border border-dark-600 font-mono text-gray-200">
+          <div class="flex items-center gap-3 mb-3">
+            <svg class="w-6 h-6 text-accent-cyan" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M3.055 11H5a2 2 0 012 2v1a2 2 0 002 2 2 2 0 012 2v2.945M8 3.935V5.5A2.5 2.5 0 0010.5 8h.5a2 2 0 012 2 2 2 0 104 0 2 2 0 012-2h1.064M15 20.488V18a2 2 0 012-2h3.064M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+            </svg>
+            <h2 class="text-lg font-bold text-accent-cyan">Research Landscape: {topic}</h2>
           </div>
-          <hr style="border-color:#333;">
-          <div style="font-size:11px;line-height:1.6;">{"<br>".join(legend_items)}</div>
-          <hr style="border-color:#333;">
-          <div style="font-size:10px;color:#888;">
-            ● Category nodes (large) | ◆ Paper nodes (small) | Click any node for full details
+          <div class="flex gap-4 text-xs text-gray-400 mb-3">
+            <span><b class="text-gray-200">Papers:</b> {result.total_papers}</span>
+            <span><b class="text-gray-200">Categories:</b> {len(all_cats)}</span>
+            <span><b class="text-gray-200">Edges:</b> {result.edges}</span>
+            <span><b class="text-gray-200">Clusters:</b> {len(result.clusters)}</span>
+          </div>
+          <hr class="border-dark-600 mb-3">
+          <div class="space-y-1">{legend_items_html}</div>
+          <hr class="border-dark-600 mt-3 mb-2">
+          <div class="flex items-center gap-3 text-[10px] text-gray-500">
+            <span>&#9679; Category (large)</span>
+            <span>&#9670; Paper (small)</span>
+            <span>Click for details</span>
+            <span>ESC to close</span>
           </div>
         </div>
         """
