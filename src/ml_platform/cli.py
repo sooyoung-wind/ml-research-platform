@@ -1040,6 +1040,23 @@ def graph_export(
         kg.close()
 
 
+@app.command("graph-view")
+def graph_view(
+    topic: str = typer.Argument(..., help="Topic name"),
+    output: str = typer.Option(None, "--output", "-o", help="Output HTML path"),
+    no_open: bool = typer.Option(False, "--no-open", help="Don't open browser"),
+) -> None:
+    """Open interactive graph visualization in browser."""
+    from ml_platform.graph.visualizer import visualize_graph
+
+    path = visualize_graph(
+        topic,
+        output_path=output,
+        open_browser=not no_open,
+    )
+    console.print(f"[green]Visualization:[/] {path}")
+
+
 def _print_stats(stats) -> None:
     """Pretty-print graph statistics."""
     console.print(Panel(
