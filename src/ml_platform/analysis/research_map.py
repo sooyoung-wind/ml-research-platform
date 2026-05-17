@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import webbrowser
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -356,6 +357,9 @@ class ResearchMapBuilder:
         """Inject the detail panel CSS/HTML/JS into the saved HTML."""
         html = html_path.read_text()
 
+        # Remove pyvis default heading (<center><h1>...</h1></center>)
+        html = re.sub(r"<center>\s*<h1>[^<]*</h1>\s*</center>", "", html)
+
         # Serialize node details as JSON
         details_json = json.dumps(node_details, ensure_ascii=False, default=str)
         js_with_data = DETAIL_PANEL_JS.replace("__NODE_DATA__", details_json)
@@ -478,7 +482,7 @@ class ResearchMapBuilder:
             height=height, width="100%", directed=False,
             bgcolor="#1a1a2e", font_color="#e0e0e0",
         )
-        net.heading = f"Research Map: {topic}"
+        net.heading = ""
 
         for nid, node in node_map.items():
             comm_id = communities.get(nid, 0)
@@ -607,7 +611,7 @@ class ResearchMapBuilder:
             height="900px", width="100%", directed=False,
             bgcolor="#1a1a2e", font_color="#e0e0e0",
         )
-        net.heading = f"Research Landscape: {topic}"
+        net.heading = ""
 
         node_details: dict[str, dict] = {}
 
