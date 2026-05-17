@@ -671,6 +671,7 @@ def run_e2e(
     top: int = typer.Option(5, "--top", "-n", help="Papers to discover"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Show plan without executing"),
     skip_discovery: bool = typer.Option(False, "--skip-discovery", help="Use existing papers only"),
+    skip_processing: bool = typer.Option(False, "--skip-processing", help="Skip PDF download + text extraction"),
     skip_analysis: bool = typer.Option(False, "--skip-analysis", help="Skip 5W1H analysis"),
     skip_graph: bool = typer.Option(False, "--skip-graph", help="Skip KG build"),
     skip_map: bool = typer.Option(False, "--skip-map", help="Skip research map"),
@@ -679,7 +680,7 @@ def run_e2e(
     open_browser: bool = typer.Option(False, "--open/--no-open", help="Open results in browser"),
     force: bool = typer.Option(False, "--force", help="Force re-processing"),
 ) -> None:
-    """End-to-end pipeline: discover → analyze → graph → map → trend → wiki.
+    """End-to-end pipeline: discover → process → analyze → graph → map → trend → wiki.
 
     Runs the complete v0.2.0 pipeline from paper discovery through
     knowledge base compilation in a single command.
@@ -691,16 +692,18 @@ def run_e2e(
     steps = []
     if not skip_discovery:
         steps.append("1. Discovery (arXiv search)")
+    if not skip_processing:
+        steps.append("2. Processing (PDF download + text extraction)")
     if not skip_analysis:
-        steps.append("2. Analysis (5W1H + evidence)")
+        steps.append("3. Analysis (5W1H + evidence → DB)")
     if not skip_graph:
-        steps.append("3. Knowledge Graph (graphqlite)")
+        steps.append("4. Knowledge Graph (graphqlite)")
     if not skip_map:
-        steps.append("4. Research Map (pyvis)")
+        steps.append("5. Research Map (pyvis)")
     if not skip_trend:
-        steps.append("5. Trend Analysis")
+        steps.append("6. Trend Analysis")
     if not skip_wiki:
-        steps.append("6. Wiki Import (OpenKB)")
+        steps.append("7. Wiki Import (OpenKB)")
 
     console.print(Panel(
         f"[bold]Topic:[/] {topic}\n"
@@ -724,57 +727,146 @@ def run_e2e(
             from ml_platform.discovery.arxiv_client import ArxivClient
             client = ArxivClient()
             papers = asyncio.run(client.search_by_keyword(topic, max_results=top))
+        db = PapersDB()
+        saved = 0
         for p in papers:
+            db.upsert_paper(p)
+            saved += 1
             console.print(f"  [green]+[/] {p.arxiv_id}: {(p.title or '')[:60]}...")
-        results["discovered"] = len(papers)
+        results["discovered"] = saved
 
-    # ── Step 2: Analysis ──
+    # ── Step 2: Processing (download + parse) ──
+    if not skip_processing:
+        console.print("\n[bold blue]══ Step 2: Processing (download + parse) ══[/]")
+        from ml_platform.processing.processor import PaperProcessor
+        from ml_platform.models import PaperSource
+        db = PapersDB()
+        papers = db.get_papers(limit=top)
+        processor = PaperProcessor()
+        processed = 0
+        skipped = 0
+        for paper in papers:
+            aid = paper.arxiv_id or paper.paper_id
+            if paper.parsed_content and not force:
+                console.print(f"  [dim]⏭ {aid} (already parsed)[/dim]")
+                skipped += 1
+                continue
+            # Ensure PDF URL is set
+            if not paper.pdf_url and paper.arxiv_id:
+                paper.pdf_url = f"https://arxiv.org/pdf/{paper.arxiv_id}"
+            try:
+                with console.status(f"[bold]Processing {aid}..."):
+                    proc_result = asyncio.run(
+                        processor.process_paper(paper, force=force)
+                    )
+                if proc_result.success:
+                    # Save parsed content back to DB
+                    db.upsert_paper(paper)
+                    chars = proc_result.extracted.get("chars", 0)
+                    processed += 1
+                    console.print(f"  [green]✓[/] {aid} ({chars:,} chars)")
+                else:
+                    console.print(f"  [red]✗[/] {aid}: {proc_result.error}")
+            except Exception as e:
+                console.print(f"  [red]✗[/] {aid}: {e}")
+        results["processed"] = processed
+        results["process_skipped"] = skipped
+
+    # ── Step 3: Analysis (5W1H + evidence) ──
     if not skip_analysis:
-        console.print("\n[bold blue]══ Step 2: 5W1H Analysis ══[/]")
+        console.print("\n[bold blue]══ Step 3: 5W1H Analysis ══[/]")
         db = PapersDB()
         papers = db.get_papers(limit=top)
         analyzed = 0
+        skipped = 0
         for paper in papers:
             aid = paper.arxiv_id or paper.paper_id
-            analysis_path = AppConfig.DATA_DIR / "analyses" / f"{aid}.json"
-            if analysis_path.exists() and not force:
+            full_id = f"arxiv_{aid}"
+            # Skip if already analyzed
+            if not force and db.has_analysis(full_id, "arxiv"):
                 console.print(f"  [dim]⏭ {aid} (already analyzed)[/dim]")
+                skipped += 1
+                continue
+            # Need parsed_content
+            if not paper.parsed_content:
+                console.print(f"  [dim]⏭ {aid} (no text content)[/dim]")
+                skipped += 1
                 continue
             try:
                 with console.status(f"[bold]Analyzing {aid}..."):
                     from ml_platform.analysis.analyzer import PaperAnalyzer
                     analyzer = PaperAnalyzer()
                     analysis = asyncio.run(analyzer.analyze(paper))
+                # Save to DB
+                db.save_analysis(full_id, "arxiv", analysis)
+                # Also save JSON file for KG consumption
+                analyses_dir = AppConfig.DATA_DIR / "analyses"
+                analyses_dir.mkdir(parents=True, exist_ok=True)
+                (analyses_dir / f"{aid}.json").write_text(
+                    analysis.model_dump_json(indent=2), encoding="utf-8"
+                )
                 analyzed += 1
                 console.print(f"  [green]✓[/] {aid}")
             except Exception as e:
                 console.print(f"  [red]✗[/] {aid}: {e}")
         results["analyzed"] = analyzed
+        results["analysis_skipped"] = skipped
 
-    # ── Step 3: Knowledge Graph ──
+    # ── Step 4: Knowledge Graph ──
     if not skip_graph:
-        console.print("\n[bold blue]══ Step 3: Knowledge Graph ══[/]")
+        console.print("\n[bold blue]══ Step 4: Knowledge Graph ══[/]")
         from ml_platform.graph.knowledge_graph import KnowledgeGraph
         try:
-            kg = KnowledgeGraph.open(topic)
+            # Sanitize topic for DB filename
+            safe_topic = topic.replace(" ", "_").replace("/", "-")[:50]
+            kg = KnowledgeGraph.open(safe_topic)
             db = PapersDB()
             papers = db.get_papers(limit=100)
+            nodes_added = 0
+            edges_added = 0
             for paper in papers:
                 aid = paper.arxiv_id or paper.paper_id
-                analysis_path = AppConfig.DATA_DIR / "analyses" / f"{aid}.json"
-                if not analysis_path.exists():
-                    continue
+                # Build slug from aid (matching add_paper_node's internal format)
+                aid_slug = aid.replace(".", "_").replace("/", "_")
+                # Use analysis from DB (more reliable than file check)
+                full_id = f"arxiv_{aid}"
+                has_analysis = db.has_analysis(full_id, "arxiv")
+                # Add paper node regardless (from metadata)
                 kg.add_paper_node(
                     paper_id=aid,
                     title=paper.title or aid,
                     year=paper.year,
                 )
+                nodes_added += 1
+                # Add category edges
                 for cat in (paper.categories or []):
-                    cat_id = cat.replace(" ", "-")
-                    kg.add_node("Category", cat_id, label=cat, name=cat)
-                    kg.add_edge(aid, cat_id, "BELONGS_TO")
-            kg.close()
+                    # Slugify cat ID (remove dots, slashes for graphqlite)
+                    cat_slug = cat.replace(".", "_").replace(" ", "-").replace("/", "-")
+                    kg.add_node(
+                        node_id=f"cat_{cat_slug}",
+                        node_type="Category",
+                        label=cat,
+                        name=cat,
+                    )
+                    kg.add_edge(f"paper_{aid_slug}", f"cat_{cat_slug}", "BELONGS_TO")
+                    edges_added += 1
+                # Add method/concept nodes from analysis if available
+                if has_analysis:
+                    analysis_data = db.get_analysis(full_id, "arxiv")
+                    if analysis_data and analysis_data.get("key_contributions_json"):
+                        import json as _json
+                        try:
+                            contribs = _json.loads(analysis_data["key_contributions_json"]) if isinstance(analysis_data["key_contributions_json"], str) else analysis_data["key_contributions_json"]
+                            for c in contribs[:3]:
+                                if isinstance(c, str) and len(c) > 3:
+                                    method_id = c[:40].replace(" ", "_")
+                                    kg.add_node("Method", method_id, label=c, name=c)
+                                    kg.add_edge(f"paper_{aid_slug}", method_id, "PROPOSES")
+                                    edges_added += 1
+                        except (_json.JSONDecodeError, TypeError):
+                            pass
             stats = kg.get_stats()
+            kg.close()
             results["graph_nodes"] = stats.node_count
             results["graph_edges"] = stats.edge_count
             console.print(f"  [green]✓[/] {stats.node_count} nodes, {stats.edge_count} edges")
@@ -782,9 +874,9 @@ def run_e2e(
             console.print(f"  [red]✗[/] {e}")
             results["graph_error"] = str(e)
 
-    # ── Step 4: Research Map ──
+    # ── Step 5: Research Map ──
     if not skip_map:
-        console.print("\n[bold blue]══ Step 4: Research Map ══[/]")
+        console.print("\n[bold blue]══ Step 5: Research Map ══[/]")
         try:
             from ml_platform.analysis.research_map import ResearchMapBuilder
             rmb = ResearchMapBuilder()
@@ -799,9 +891,9 @@ def run_e2e(
             console.print(f"  [red]✗[/] {e}")
             results["map_error"] = str(e)
 
-    # ── Step 5: Trend Analysis ──
+    # ── Step 6: Trend Analysis ──
     if not skip_trend:
-        console.print("\n[bold blue]══ Step 5: Trend Analysis ══[/]")
+        console.print("\n[bold blue]══ Step 6: Trend Analysis ══[/]")
         try:
             from ml_platform.analysis.trends import TrendAnalyzer
             ta = TrendAnalyzer()
@@ -831,9 +923,9 @@ def run_e2e(
             console.print(f"  [red]✗[/] {e}")
             results["trend_error"] = str(e)
 
-    # ── Step 6: Wiki Import ──
+    # ── Step 7: Wiki Import ──
     if not skip_wiki:
-        console.print("\n[bold blue]══ Step 6: Wiki Import ══[/]")
+        console.print("\n[bold blue]══ Step 7: Wiki Import ══[/]")
         from ml_platform.wiki import WikiManager
         wm = WikiManager()
         if not wm.is_initialized:
