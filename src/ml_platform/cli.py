@@ -855,3 +855,200 @@ def setup_deepcode() -> None:
 
 if __name__ == "__main__":
     app()
+
+
+# ── Graph commands ─────────────────────────────────────────────────────
+
+
+@app.command("graph")
+def graph_command(
+    ctx: typer.Context,
+) -> None:
+    """Knowledge graph operations. Use subcommands: build, query, stats, list, export."""
+    # If no subcommand, show help
+    if ctx.invoked_subcommand is None:
+        console.print("[bold]Knowledge Graph Commands:[/]")
+        console.print("  ml-research graph build <topic>     Build graph from analyses")
+        console.print("  ml-research graph query <topic> <cypher>  Run Cypher query")
+        console.print("  ml-research graph stats [topic]     Show graph statistics")
+        console.print("  ml-research graph list               List all topic graphs")
+        console.print("  ml-research graph export <topic>     Export graph as JSON/MD")
+
+
+@app.command("graph-build")
+def graph_build(
+    topic: str = typer.Argument(..., help="Topic name for the graph"),
+    papers: str = typer.Option(None, "--papers", "-p", help="Comma-separated paper IDs"),
+    force: bool = typer.Option(False, "--force", "-f", help="Force rebuild"),
+) -> None:
+    """Build a knowledge graph from paper analyses."""
+    from ml_platform.graph.builder import GraphBuilder
+
+    paper_ids = [p.strip() for p in papers.split(",")] if papers else None
+
+    builder = GraphBuilder()
+    stats = builder.build_topic(topic, paper_ids=paper_ids, force=force)
+
+    console.print(Panel(
+        f"[bold]Graph:[/] {topic}\n"
+        f"[bold]Nodes:[/] {stats.node_count}  {stats.node_types}\n"
+        f"[bold]Edges:[/] {stats.edge_count}  {stats.edge_types}\n"
+        f"[bold]Papers:[/] {stats.papers_indexed}\n"
+        f"[bold]DB:[/] {stats.db_path}",
+        title="Knowledge Graph Built",
+    ))
+
+
+@app.command("graph-query")
+def graph_query(
+    topic: str = typer.Argument(..., help="Topic name"),
+    cypher: str = typer.Argument(..., help="Cypher query string"),
+) -> None:
+    """Run a Cypher query against a topic graph."""
+    from ml_platform.graph.knowledge_graph import KnowledgeGraph
+
+    kg = KnowledgeGraph.open(topic)
+    try:
+        results = kg.query(cypher)
+        if not results:
+            console.print("[dim]No results.[/]")
+            return
+
+        table = Table(title=f"Query: {cypher[:60]}")
+        if results:
+            for key in results[0].keys():
+                table.add_column(key)
+
+            for row in results[:50]:
+                table.add_row(*[str(v) for v in row.values()])
+
+        console.print(table)
+    finally:
+        kg.close()
+
+
+@app.command("graph-stats")
+def graph_stats(
+    topic: str = typer.Argument(None, help="Topic name (omit for all)"),
+) -> None:
+    """Show knowledge graph statistics."""
+    from ml_platform.graph.builder import GraphBuilder
+    from ml_platform.graph.knowledge_graph import KnowledgeGraph
+
+    if topic:
+        kg = KnowledgeGraph.open(topic)
+        try:
+            stats = kg.get_stats()
+            _print_stats(stats)
+        finally:
+            kg.close()
+    else:
+        graphs = GraphBuilder.list_graphs()
+        if not graphs:
+            console.print("[dim]No graphs found.[/]")
+            return
+
+        for g in graphs:
+            if "error" in g:
+                console.print(f"  [red]{g['topic']}[/]: {g['error']}")
+                continue
+            s = g["stats"]
+            console.print(
+                f"  [bold]{g['topic']}[/]: "
+                f"{s['node_count']} nodes, {s['edge_count']} edges, "
+                f"{s['papers_indexed']} papers"
+            )
+
+
+@app.command("graph-list")
+def graph_list() -> None:
+    """List all topic knowledge graphs."""
+    from ml_platform.graph.builder import GraphBuilder
+
+    graphs = GraphBuilder.list_graphs()
+    if not graphs:
+        console.print("[dim]No knowledge graphs found. Use 'graph-build' to create one.[/]")
+        return
+
+    table = Table(title="Knowledge Graphs")
+    table.add_column("Topic", style="bold")
+    table.add_column("Nodes")
+    table.add_column("Edges")
+    table.add_column("Papers")
+    table.add_column("DB Path")
+
+    for g in graphs:
+        if "error" in g:
+            table.add_row(g["topic"], "[red]ERROR[/]", "", "", g["db_path"])
+            continue
+        s = g["stats"]
+        table.add_row(
+            g["topic"],
+            str(s["node_count"]),
+            str(s["edge_count"]),
+            str(s["papers_indexed"]),
+            g["db_path"],
+        )
+
+    console.print(table)
+
+
+@app.command("graph-export")
+def graph_export(
+    topic: str = typer.Argument(..., help="Topic name"),
+    fmt: str = typer.Option("json", "--format", "-f", help="Export format: json, md"),
+    output: str = typer.Option(None, "--output", "-o", help="Output file path"),
+) -> None:
+    """Export a knowledge graph."""
+    import json as json_mod
+    from ml_platform.graph.knowledge_graph import KnowledgeGraph
+
+    kg = KnowledgeGraph.open(topic)
+    try:
+        stats = kg.get_stats()
+        nodes = kg.get_all_nodes()
+        edges = kg.get_all_edges()
+
+        if fmt == "json":
+            data = {
+                "topic": topic,
+                "stats": stats.model_dump(),
+                "nodes": nodes,
+                "edges": edges,
+            }
+            content = json_mod.dumps(data, indent=2, ensure_ascii=False)
+        elif fmt == "md":
+            lines = [f"# Knowledge Graph: {topic}\n"]
+            lines.append(f"**Nodes:** {stats.node_count} | **Edges:** {stats.edge_count}\n")
+            lines.append("## Nodes\n")
+            for n in nodes:
+                lines.append(f"- [{n.get('types', ['?'])[0] if isinstance(n.get('types'), list) else n.get('types', '?')}] {n.get('n.label', n.get('value', '?'))}")
+            lines.append("\n## Edges\n")
+            for e in edges:
+                lines.append(f"- {e.get('a.node_id', '?')} --[{e.get('rel', '?')}]--> {e.get('b.node_id', '?')}")
+            content = "\n".join(lines)
+        else:
+            console.print(f"[red]Unknown format: {fmt}. Use json or md.[/]")
+            return
+
+        if output:
+            Path(output).write_text(content)
+            console.print(f"Exported to {output}")
+        else:
+            console.print(content)
+    finally:
+        kg.close()
+
+
+def _print_stats(stats) -> None:
+    """Pretty-print graph statistics."""
+    console.print(Panel(
+        f"[bold]Topic:[/] {stats.topic}\n"
+        f"[bold]Nodes:[/] {stats.node_count}\n"
+        f"[bold]Edges:[/] {stats.edge_count}\n"
+        f"[bold]Papers:[/] {stats.papers_indexed}\n"
+        f"[bold]DB:[/] {stats.db_path}\n"
+        f"[dim]Node types: {stats.node_types}[/]\n"
+        f"[dim]Edge types: {stats.edge_types}[/]",
+        title="Graph Stats",
+    ))

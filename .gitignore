@@ -33,3 +33,4 @@ htmlcov/
 .pytest_cache/
 data/codegen/.deepcode/
 .env
+data/graphs/*.db
