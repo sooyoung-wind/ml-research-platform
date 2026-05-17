@@ -98,7 +98,7 @@ class DeepCodeConfig:
     anthropic_api_key: str = ""
     google_api_key: str = ""
     # Ollama settings (local inference, no API key needed)
-    ollama_base_url: str = "http://localhost:11434"
+    ollama_base_url: str = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 
 
 class DeepCodeRunner:
@@ -189,8 +189,10 @@ class DeepCodeRunner:
                 "default_model"
             ] = self.config.model_name
             secrets.setdefault("openai", {})["api_key"] = "ollama"
-            with open(secrets_path, "w") as f:
-                yaml.dump(secrets, f, default_flow_style=False)
+            secrets["openai"]["base_url"] = base_url
+
+        with open(secrets_path, "w") as f:
+            yaml.dump(secrets, f, default_flow_style=False)
 
         config_path = self.config_dir / "mcp_agent.config.yaml"
         with open(config_path, "w") as f:
@@ -350,8 +352,9 @@ class DeepCodeRunner:
             main_config["openai"][
                 "default_model"
             ] = self.config.model_name
-            # Write dummy openai key in secrets so get_api_keys finds it
+            # Write dummy openai key + base_url in secrets so implementation workflow finds it
             secrets.setdefault("openai", {})["api_key"] = "ollama"
+            secrets["openai"]["base_url"] = base_url
             with open(os.path.join(tmpdir, "mcp_agent.secrets.yaml"), "w") as f:
                 yaml.dump(secrets, f, default_flow_style=False)
 
