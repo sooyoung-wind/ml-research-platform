@@ -28,7 +28,7 @@ for _env_path in [
         break
 
 # Platform defaults from .env (must be after dotenv load)
-from ml_platform.config import DEFAULT_LLM_MODEL, DEFAULT_LLM_PROVIDER  # noqa: E402
+from ml_platform.config import DEFAULT_LLM_MODEL, DEFAULT_LLM_PROVIDER, AppConfig  # noqa: E402
 
 
 def _check_ollama() -> bool:
@@ -438,11 +438,39 @@ def status() -> None:
     stats = db.get_stats()
 
     console.print(Panel("[bold]ML Research Platform Status[/]", style="blue"))
+
+    # Database stats
     console.print(f"  Database: [green]{db.db_path}[/]")
     console.print(f"  Total papers: [bold]{stats['total_papers']}[/]")
     console.print(f"  With code:    {stats['with_code']}")
     console.print(f"  Without code: {stats['without_code']}")
     console.print(f"  By status:    {stats['by_status']}")
+
+    # Knowledge graphs
+    graph_dir = AppConfig.DATA_DIR / "graphs"
+    graph_dbs = list(graph_dir.glob("graph_*.db")) if graph_dir.exists() else []
+    if graph_dbs:
+        console.print(f"\n  [bold]Knowledge Graphs:[/] {len(graph_dbs)}")
+        for gdb in graph_dbs:
+            topic = gdb.stem.replace("graph_", "")
+            console.print(f"    - {topic}")
+
+    # Analyses
+    try:
+        with db._conn() as conn:
+            analyzed = conn.execute("SELECT COUNT(*) FROM analysis_results WHERE status='completed'").fetchone()[0]
+        console.print(f"\n  [bold]Analyses:[/] {analyzed} completed")
+    except Exception:
+        pass
+
+    # Config
+    console.print(f"\n  [bold]LLM:[/] {DEFAULT_LLM_PROVIDER}/{DEFAULT_LLM_MODEL}")
+
+    # Maps
+    map_dir = AppConfig.DATA_DIR / "maps"
+    map_files = list(map_dir.glob("map_*.html")) if map_dir.exists() else []
+    if map_files:
+        console.print(f"  [bold]Research Maps:[/] {len(map_files)}")
 
 @app.command("version")
 def version() -> None:
@@ -1146,6 +1174,78 @@ def _print_trend_report(report) -> None:
             domains = ", ".join(m.domains[:3]) or "—"
             table.add_row(m.method_name, str(m.papers_using), domains, period)
         console.print(table)
+
+
+# ── Map commands ─────────────────────────────────────────────────────
+
+
+@app.command("map")
+def map_generate(
+    topic: str = typer.Argument("all", help="Topic name or 'all' for all papers"),
+    source: str = typer.Option("auto", "--source", "-s", help="Data source: auto, graph, papers"),
+    open_browser: bool = typer.Option(True, "--open/--no-open", help="Open in browser"),
+    output: str = typer.Option(None, "--output", "-o", help="Save markdown summary to file"),
+) -> None:
+    """Generate interactive research landscape map.
+
+    Creates a network visualization showing topic clusters,
+    paper relationships, and research frontiers.
+
+    Sources:
+      auto   — use knowledge graph if available, else papers
+      graph  — force knowledge graph source
+      papers — force papers DB (co-category network)
+    """
+    from ml_platform.analysis.research_map import (
+        ResearchMapBuilder,
+        generate_map_markdown,
+    )
+
+    builder = ResearchMapBuilder()
+
+    # Determine source
+    use_graph = False
+    if source == "graph":
+        use_graph = True
+    elif source == "auto":
+        # Check if graph DB exists
+        graph_path = AppConfig.DATA_DIR / "graphs" / f"graph_{topic}.db"
+        use_graph = graph_path.exists()
+
+    if use_graph and topic != "all":
+        console.print(f"[bold]Building research map from knowledge graph:[/] {topic}")
+        result = builder.build_from_graph(topic, open_browser=open_browser)
+    else:
+        console.print(f"[bold]Building research map from papers DB[/] ({topic})")
+        result = builder.build_from_papers(topic, open_browser=open_browser)
+
+    # Print summary
+    console.print()
+    console.print(Panel(
+        f"[bold]Topic:[/] {result.topic}\n"
+        f"[bold]Papers:[/] {result.total_papers}\n"
+        f"[bold]Edges:[/] {result.edges}\n"
+        f"[bold]Clusters:[/] {len(result.clusters)}",
+        title="Research Map",
+    ))
+
+    if result.clusters:
+        table = Table(title="Clusters", show_lines=False)
+        table.add_column("Cluster", style="bold cyan")
+        table.add_column("Size", justify="right")
+        table.add_column("Keywords")
+        for c in sorted(result.clusters, key=lambda x: x.size, reverse=True):
+            kw = ", ".join(c.keywords[:4])
+            table.add_row(c.label, str(c.size), kw)
+        console.print(table)
+
+    if result.html_path:
+        console.print(f"\n[green]Interactive map:[/] {result.html_path}")
+
+    if output:
+        md = generate_map_markdown(result)
+        Path(output).write_text(md)
+        console.print(f"[green]Summary saved:[/] {output}")
 
 
 @app.command("trend-interview")
