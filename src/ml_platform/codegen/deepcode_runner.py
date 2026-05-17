@@ -174,9 +174,28 @@ class DeepCodeRunner:
         with open(secrets_path, "w") as f:
             yaml.dump(secrets, f, default_flow_style=False)
 
-        # Write main config
+        # Write main config with MCP servers
+        import site as _site
+        tools_dir = Path(_site.getsitepackages()[0]) / "tools"
+
         main_config: dict = {
             "llm_provider": self.config.llm_provider,
+            "mcp": {
+                "servers": {
+                    "command-executor": {
+                        "command": "python",
+                        "args": [str(tools_dir / "command_executor.py")],
+                    },
+                    "code-implementation": {
+                        "command": "python",
+                        "args": [str(tools_dir / "code_implementation_server.py")],
+                    },
+                    "code-reference-indexer": {
+                        "command": "python",
+                        "args": [str(tools_dir / "code_reference_indexer.py")],
+                    },
+                },
+            },
         }
 
         # Ollama support for CWD-based execution
@@ -339,7 +358,27 @@ class DeepCodeRunner:
             yaml.dump(secrets, f, default_flow_style=False)
 
         # Build mcp-agent config YAML
-        main_config: dict = {}
+        import site as _site
+        tools_dir = Path(_site.getsitepackages()[0]) / "tools"
+
+        main_config: dict = {
+            "mcp": {
+                "servers": {
+                    "command-executor": {
+                        "command": "python",
+                        "args": [str(tools_dir / "command_executor.py")],
+                    },
+                    "code-implementation": {
+                        "command": "python",
+                        "args": [str(tools_dir / "code_implementation_server.py")],
+                    },
+                    "code-reference-indexer": {
+                        "command": "python",
+                        "args": [str(tools_dir / "code_reference_indexer.py")],
+                    },
+                },
+            },
+        }
         if self.config.llm_provider:
             main_config["llm_provider"] = self.config.llm_provider
 
