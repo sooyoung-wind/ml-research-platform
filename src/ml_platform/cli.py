@@ -1146,6 +1146,34 @@ def _print_trend_report(report) -> None:
             domains = ", ".join(m.domains[:3]) or "—"
             table.add_row(m.method_name, str(m.papers_using), domains, period)
         console.print(table)
+
+
+@app.command("trend-interview")
+def trend_interview(
+    query: str = typer.Argument(..., help="Initial research query (e.g. 'RAG trends')"),
+    output: str = typer.Option(None, "--output", "-o", help="Save report to file"),
+) -> None:
+    """Interactive trend analysis with multi-round interview.
+
+    LangGraph-based interview system that asks 3+ clarifying
+    questions to understand your research interest before
+    generating a focused trend report.
+    """
+    from ml_platform.analysis.interview import run_interactive_trend
+
+    console.print(Panel(
+        f"[bold]Query:[/] {query}\n"
+        f"[dim]Starting interactive interview (3-5 questions)...[/]",
+        title="Trend Interview",
+    ))
+
+    result = run_interactive_trend(query)
+
+    if result and output:
+        Path(output).write_text(str(result))
+        console.print(f"\n[green]Report saved to:[/] {output}")
+
+
 def _print_stats(stats) -> None:
     """Pretty-print graph statistics."""
     console.print(Panel(
