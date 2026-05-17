@@ -1286,3 +1286,201 @@ def _print_stats(stats) -> None:
         f"[dim]Edge types: {stats.edge_types}[/]",
         title="Graph Stats",
     ))
+
+
+# ── Wiki commands (OpenKB) ───────────────────────────────────────────
+
+
+@app.command("wiki-init")
+def wiki_init(
+    model: str = typer.Option("", "--model", "-m", help="LiteLLM model (e.g. ollama/gemma4:31b-cloud)"),
+    language: str = typer.Option("en", "--language", "-l", help="Wiki output language"),
+) -> None:
+    """Initialize the OpenKB research wiki."""
+    from ml_platform.wiki import WikiManager
+
+    wm = WikiManager()
+    result = wm.init(model=model, language=language)
+
+    if result["status"] == "already_exists":
+        console.print(f"[yellow]Wiki already initialized at {result['path']}[/]")
+        return
+
+    console.print(Panel(
+        f"[bold green]Wiki initialized![/]\n\n"
+        f"[bold]Path:[/] {result['path']}\n"
+        f"[bold]Model:[/] {result['model']}\n"
+        f"[bold]Language:[/] {result['language']}",
+        title="Wiki Init",
+    ))
+
+
+@app.command("wiki-add")
+def wiki_add(
+    path: str = typer.Argument(..., help="File or directory to add"),
+) -> None:
+    """Add documents to the wiki."""
+    from ml_platform.wiki import WikiManager
+
+    wm = WikiManager()
+    if not wm.is_initialized:
+        console.print("[red]Wiki not initialized. Run 'ml-research wiki-init' first.[/]")
+        raise typer.Exit(1)
+
+    from openkb.cli import add_single_file
+
+    target = Path(path)
+    if not target.exists():
+        console.print(f"[red]Path not found: {path}[/]")
+        raise typer.Exit(1)
+
+    if target.is_dir():
+        from openkb.cli import SUPPORTED_EXTENSIONS
+        files = [
+            f for f in sorted(target.rglob("*"))
+            if f.is_file() and f.suffix.lower() in SUPPORTED_EXTENSIONS
+        ]
+        if not files:
+            console.print(f"[yellow]No supported files in {path}[/]")
+            return
+        console.print(f"Found {len(files)} file(s).")
+        for i, f in enumerate(files, 1):
+            console.print(f"[{i}/{len(files)}] ", end="")
+            add_single_file(f, wm.wiki_dir)
+    else:
+        add_single_file(target, wm.wiki_dir)
+
+
+@app.command("wiki-import")
+def wiki_import(
+    paper_id: str = typer.Argument(None, help="Paper arXiv ID (omit for all)"),
+    all_papers: bool = typer.Option(False, "--all", "-a", help="Import all papers from DB"),
+    limit: int = typer.Option(0, "--limit", "-n", help="Max papers to import (0=all)"),
+) -> None:
+    """Import papers from the DB into the wiki."""
+    from ml_platform.wiki import WikiManager
+
+    wm = WikiManager()
+    if not wm.is_initialized:
+        console.print("[red]Wiki not initialized. Run 'ml-research wiki-init' first.[/]")
+        raise typer.Exit(1)
+
+    if all_papers or not paper_id:
+        result = wm.import_all_papers(limit=limit)
+        console.print(Panel(
+            f"[bold]Total:[/] {result['total']}\n"
+            f"[bold green]Imported:[/] {result['imported']}\n"
+            f"[bold yellow]Skipped:[/] {result['skipped']}\n"
+            f"[bold red]Errors:[/] {result['errors']}",
+            title="Wiki Import",
+        ))
+    else:
+        result = wm.import_paper(paper_id)
+        if result["status"] == "error":
+            console.print(f"[red]{result['message']}[/]")
+        elif result["status"] == "already_imported":
+            console.print(f"[yellow]Already imported: {result['doc_name']}[/]")
+        elif result["status"] == "compile_error":
+            console.print(f"[red]Compile error: {result['error']}[/]")
+        else:
+            console.print(f"[green]Imported: {result['doc_name']}[/]")
+
+
+@app.command("wiki-query")
+def wiki_query(
+    question: str = typer.Argument(..., help="Question to ask the wiki"),
+    save: bool = typer.Option(False, "--save", "-s", help="Save answer to wiki/explorations/"),
+) -> None:
+    """Query the research wiki."""
+    from ml_platform.wiki import WikiManager
+
+    wm = WikiManager()
+    if not wm.is_initialized:
+        console.print("[red]Wiki not initialized. Run 'ml-research wiki-init' first.[/]")
+        raise typer.Exit(1)
+
+    console.print(f"[dim]Asking: {question}[/]")
+    answer = wm.query(question, save=save)
+
+    if answer.startswith("[ERROR]"):
+        console.print(f"[red]{answer}[/]")
+    elif answer:
+        console.print(Panel(answer, title="Wiki Answer"))
+    else:
+        console.print("[yellow]No answer returned.[/]")
+
+
+@app.command("wiki-list")
+def wiki_list() -> None:
+    """List all indexed documents in the wiki."""
+    from ml_platform.wiki import WikiManager
+
+    wm = WikiManager()
+    if not wm.is_initialized:
+        console.print("[red]Wiki not initialized.[/]")
+        raise typer.Exit(1)
+
+    docs = wm.list_docs()
+    if not docs:
+        console.print("[yellow]No documents indexed yet.[/]")
+        return
+
+    table = Table(title="Wiki Documents")
+    table.add_column("Name", style="cyan")
+    table.add_column("Type", style="green")
+    table.add_column("Doc Name", style="dim")
+    for d in docs:
+        table.add_row(d["name"], d["type"], d["doc_name"])
+    console.print(table)
+
+
+@app.command("wiki-status")
+def wiki_status() -> None:
+    """Show wiki status."""
+    from ml_platform.wiki import WikiManager
+
+    wm = WikiManager()
+    status = wm.get_status()
+
+    if not status["initialized"]:
+        console.print("[yellow]Wiki not initialized. Run 'ml-research wiki-init'.[/]")
+        return
+
+    console.print(Panel(
+        f"[bold]Path:[/] {status['path']}\n"
+        f"[bold]Model:[/] {status['model']}\n"
+        f"[bold]Language:[/] {status['language']}\n\n"
+        f"[bold]Indexed:[/] {status['indexed']} docs\n"
+        f"[bold]Raw:[/] {status['raw_files']} files\n\n"
+        f"[bold]Sources:[/] {status['sources']}\n"
+        f"[bold]Summaries:[/] {status['summaries']}\n"
+        f"[bold]Concepts:[/] {status['concepts']}\n"
+        f"[bold]Explorations:[/] {status['explorations']}\n"
+        f"[bold]Reports:[/] {status['reports']}",
+        title="Wiki Status",
+    ))
+
+
+@app.command("wiki-lint")
+def wiki_lint(
+    fix: bool = typer.Option(False, "--fix", help="Auto-fix broken wikilinks"),
+) -> None:
+    """Lint the wiki for structural and semantic issues."""
+    from ml_platform.wiki import WikiManager
+    from openkb.cli import run_lint
+    import asyncio
+
+    wm = WikiManager()
+    if not wm.is_initialized:
+        console.print("[red]Wiki not initialized.[/]")
+        raise typer.Exit(1)
+
+    if fix:
+        from openkb.lint import fix_broken_links
+        files_changed, ghosts = fix_broken_links(wm.wiki_dir / "wiki")
+        if files_changed:
+            console.print(f"[green]Fixed {ghosts} wikilink(s) in {files_changed} file(s)[/]")
+        else:
+            console.print("[green]All wikilinks resolve correctly.[/]")
+
+    asyncio.run(run_lint(wm.wiki_dir))

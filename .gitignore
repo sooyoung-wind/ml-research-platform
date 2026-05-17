@@ -37,3 +37,4 @@ data/graphs/*.db
 data/graphs/viz_*.html
 data/trends/
 data/maps/*.html
+data/wiki/
