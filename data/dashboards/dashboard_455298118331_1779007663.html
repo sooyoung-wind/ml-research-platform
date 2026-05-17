@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="ko" class="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Research Dashboard — retrieval augmented generation hallucination reduction</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  body { background: #0f172a; color: #e2e8f0; font-family: 'Inter', system-ui, sans-serif; }
+  .card { background: #1e293b; border: 1px solid #334155; border-radius: 12px; }
+  .paper-card { transition: all 0.2s; cursor: pointer; }
+  .paper-card:hover { border-color: #60a5fa; transform: translateY(-2px); }
+  .paper-card.selected { border-color: #34d399; background: #064e3b22; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 9999px; font-size: 0.7rem; font-weight: 600; }
+  .source-arxiv { background: #b91c1c33; color: #fca5a5; }
+  .source-semantic_scholar { background: #1d4ed833; color: #93c5fd; }
+  .source-huggingface { background: #d9770633; color: #fcd34d; }
+  .source-paperswithcode { background: #7c3aed33; color: #c4b5fd; }
+  .stat-number { font-size: 2rem; font-weight: 800; background: linear-gradient(135deg, #60a5fa, #a78bfa); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+  #selection-bar { position: fixed; bottom: 0; left: 0; right: 0; background: #1e293b; border-top: 2px solid #334155; padding: 12px 24px; display: none; z-index: 50; }
+  .fade-in { animation: fadeIn 0.3s ease-in; }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+</style>
+</head>
+<body class="min-h-screen">
+
+<!-- Header -->
+<header class="border-b border-slate-700 px-6 py-4">
+  <div class="max-w-7xl mx-auto flex items-center justify-between">
+    <div>
+      <h1 class="text-2xl font-bold bg-gradient-to-r from-blue-400 to-purple-400 bg-clip-text text-transparent">
+        ML Research Dashboard
+      </h1>
+      <p class="text-slate-400 text-sm mt-1">retrieval augmented generation hallucination reduction</p>
+    </div>
+    <div class="text-right">
+      <p class="text-slate-500 text-xs">Generated: 2026-05-17 17:47</p>
+      <p class="text-slate-500 text-xs">Session: 455298118331</p>
+    </div>
+  </div>
+</header>
+
+<!-- Stats Bar -->
+<div class="max-w-7xl mx-auto px-6 py-6">
+  <div class="grid grid-cols-2 md:grid-cols-5 gap-4">
+    <div class="card p-4 text-center"><p class="stat-number">0</p><p class="text-slate-400 text-sm">Papers Found</p></div>
+<div class="card p-4 text-center"><p class="stat-number">1</p><p class="text-slate-400 text-sm">Sources</p></div>
+<div class="card p-4 text-center"><p class="stat-number">20</p><p class="text-slate-400 text-sm">KG Nodes</p></div>
+<div class="card p-4 text-center"><p class="stat-number">40</p><p class="text-slate-400 text-sm">KG Edges</p></div>
+<div class="card p-4 text-center"><p class="stat-number">5</p><p class="text-slate-400 text-sm">Wiki Articles</p></div>
+  </div>
+</div>
+
+<!-- Search Strategy Summary -->
+<div class="max-w-7xl mx-auto px-6 pb-4">
+  <div class="card p-4">
+    <h3 class="font-semibold text-blue-400 mb-2">Search Strategy</h3>
+    <div class="flex flex-wrap gap-2">
+      <span class="badge bg-blue-900 text-blue-300">Retrieval Augmented Generation</span>
+<span class="badge bg-blue-900 text-blue-300">hallucination mitigation</span>
+<span class="badge bg-blue-900 text-blue-300">factuality</span>
+<span class="badge bg-blue-900 text-blue-300">faithfulness</span>
+<span class="badge bg-blue-900 text-blue-300">knowledge grounding</span>
+<span class="badge source-arxiv">arxiv</span>
+<span class="badge bg-purple-900 text-purple-300">NLP</span>
+    </div>
+    <p class="text-slate-400 text-sm mt-2">Query: <code class="text-green-400">effective methods for reducing hallucinations in Retrieval Augmented Generation (RAG) systems</code></p>
+  </div>
+</div>
+
+<!-- Main Content: Paper List -->
+<div class="max-w-7xl mx-auto px-6 pb-24">
+  <div class="flex items-center justify-between mb-4">
+    <h2 class="text-xl font-bold">Collected Papers (0)</h2>
+    <div class="flex gap-2">
+      <button onclick="selectAll()" class="text-sm px-3 py-1 bg-blue-600 hover:bg-blue-700 rounded-lg">Select All</button>
+      <button onclick="deselectAll()" class="text-sm px-3 py-1 bg-slate-600 hover:bg-slate-700 rounded-lg">Deselect</button>
+      <button onclick="exportSelection()" class="text-sm px-3 py-1 bg-green-600 hover:bg-green-700 rounded-lg">Export Selected</button>
+    </div>
+  </div>
+  <div class="grid gap-3" id="paper-list">
+    
+  </div>
+</div>
+
+<!-- Selection Bar -->
+<div id="selection-bar">
+  <div class="max-w-7xl mx-auto flex items-center justify-between">
+    <span id="selection-count" class="text-slate-300">0 papers selected</span>
+    <div class="flex gap-3">
+      <button onclick="copySelection()" class="px-4 py-2 bg-purple-600 hover:bg-purple-700 rounded-lg font-semibold text-sm">
+        Copy IDs
+      </button>
+      <button onclick="saveSelection()" class="px-4 py-2 bg-green-600 hover:bg-green-700 rounded-lg font-semibold text-sm">
+        Save to File
+      </button>
+    </div>
+  </div>
+</div>
+
+<script>
+const papers = [];
+const selected = new Set();
+
+function toggleSelect(arxivId) {
+  const card = document.getElementById('card-' + CSS.escape(arxivId));
+  if (selected.has(arxivId)) {
+    selected.delete(arxivId);
+    card.classList.remove('selected');
+  } else {
+    selected.add(arxivId);
+    card.classList.add('selected');
+  }
+  updateSelectionBar();
+}
+
+function selectAll() {
+  papers.forEach(p => { if (p.arxiv_id) selected.add(p.arxiv_id); });
+  document.querySelectorAll('.paper-card').forEach(c => c.classList.add('selected'));
+  updateSelectionBar();
+}
+
+function deselectAll() {
+  selected.clear();
+  document.querySelectorAll('.paper-card').forEach(c => c.classList.remove('selected'));
+  updateSelectionBar();
+}
+
+function updateSelectionBar() {
+  const bar = document.getElementById('selection-bar');
+  const count = document.getElementById('selection-count');
+  if (selected.size > 0) {
+    bar.style.display = 'block';
+    count.textContent = selected.size + ' papers selected';
+  } else {
+    bar.style.display = 'none';
+  }
+}
+
+function copySelection() {
+  navigator.clipboard.writeText(JSON.stringify([...selected], null, 2));
+  alert('Copied ' + selected.size + ' paper IDs to clipboard!');
+}
+
+function saveSelection() {
+  const data = { selected_papers: [...selected], timestamp: new Date().toISOString() };
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = 'selected_papers.json'; a.click();
+}
+
+function exportSelection() { saveSelection(); }
+</script>
+
+</body>
+</html>

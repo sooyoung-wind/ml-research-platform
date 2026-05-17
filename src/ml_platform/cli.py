@@ -1767,4 +1767,466 @@ def wiki_lint(
         else:
             console.print("[green]All wikilinks resolve correctly.[/]")
 
-    asyncio.run(run_lint(wm.wiki_dir))
+
+# ═══════════════════════════════════════════════════════════════════════
+# Interactive Research Agent (v1.0)
+# ═══════════════════════════════════════════════════════════════════════
+
+@app.command("research")
+def research_command(
+    question: str = typer.Argument(..., help="Your research question"),
+    skip_interview: bool = typer.Option(False, "--skip-interview", help="Skip clarifying interview"),
+    sources: str = typer.Option("arxiv,semantic_scholar", "--sources", help="Comma-separated search sources"),
+    max_papers: int = typer.Option(20, "--max", "-n", help="Max papers to collect"),
+    open_browser: bool = typer.Option(True, "--open/--no-open", help="Open dashboard in browser"),
+    resume_session: str = typer.Option("", "--resume", help="Resume a previous session ID"),
+) -> None:
+    """Interactive research: question -> interview -> search -> dashboard -> selection -> code.
+
+    This is the main v1.0 entry point. It guides you through the full
+    research pipeline interactively:
+
+    1. Analyzes your question clarity
+    2. Asks clarifying questions if needed (interview)
+    3. Searches multiple sources for relevant papers
+    4. Builds knowledge graph + wiki from results
+    5. Generates an interactive HTML dashboard
+    6. You select papers for deep implementation
+    7. DeepCode generates code from selected papers
+    8. Analyzes reproducibility and suggests future work
+
+    Examples:
+        ml-research research "RAG에서 hallucination 줄이는 최신 연구"
+        ml-research research "transformer attention mechanisms" --skip-interview
+        ml-research research --resume abc123def456
+    """
+    import asyncio
+    from ml_platform.agent import (
+        QuestionClarifier, ResearchInterviewer, ResearchSession,
+        SessionPhase, UnifiedSearcher, DashboardGenerator,
+    )
+
+    # ── Session Setup ──
+    session = ResearchSession()
+    if resume_session:
+        try:
+            state = session.load(resume_session)
+            console.print(f"[green]Resumed session {state.session_id}[/] (phase: {state.phase.value})")
+        except FileNotFoundError:
+            console.print(f"[red]Session {resume_session} not found[/]")
+            raise typer.Exit(1)
+    else:
+        state = session.start(question)
+        console.print(Panel(
+            f"[bold]Session:[/] {state.session_id}\n"
+            f"[bold]Question:[/] {question}",
+            title="Research Session Started",
+        ))
+
+    # ── Step 1: Question Analysis ──
+    if state.phase == SessionPhase.QUESTION:
+        console.print("\n[bold blue]══ Step 1: Analyzing Question ══[/]")
+        with console.status("[bold]Analyzing question clarity..."):
+            clarifier = QuestionClarifier()
+            result = clarifier.analyze(question)
+
+        console.print(f"  Clarity: [bold]{result.clarity_score}/5[/] ({result.clarity_level})")
+        if result.detected_domain:
+            console.print(f"  Domain: [cyan]{result.detected_domain}[/]")
+        if result.detected_task:
+            console.print(f"  Task: [cyan]{result.detected_task}[/]")
+        if result.detected_method:
+            console.print(f"  Method: [cyan]{result.detected_method}[/]")
+        if result.suggested_keywords:
+            console.print(f"  Keywords: [green]{', '.join(result.suggested_keywords)}[/]")
+
+        if result.clarity_score >= 3:
+            console.print("[green]Question is clear enough to proceed![/]")
+            # Build strategy directly
+            strategy = {
+                "refined_query": result.refined_query,
+                "keywords": result.suggested_keywords,
+                "domains": [result.detected_domain] if result.detected_domain else [],
+                "sources": sources.split(","),
+                "max_papers": max_papers,
+            }
+            session.advance(SessionPhase.SEARCHING, search_strategy=strategy)
+        else:
+            console.print("[yellow]Question needs clarification.[/]")
+            session.advance(SessionPhase.INTERVIEW)
+
+    # ── Step 2: Interview ──
+    if state.phase == SessionPhase.INTERVIEW and not skip_interview:
+        console.print("\n[bold blue]══ Step 2: Clarifying Interview ══[/]")
+        interviewer = ResearchInterviewer(min_clarity=3, max_rounds=3, min_rounds=1)
+        int_state = interviewer.start(question)
+
+        round_num = 0
+        while not int_state.is_complete and round_num < 3:
+            q = interviewer.get_next_question(int_state)
+            if q is None:
+                break
+            console.print(f"\n  [bold cyan]Q{round_num + 1}:[/] {q}")
+            answer = typer.prompt("  Your answer")
+            if not answer.strip():
+                answer = "(skip)"
+            interviewer.process_answer(int_state, answer)
+            round_num += 1
+
+        # Build final strategy
+        if int_state.final_strategy:
+            strategy = {
+                "refined_query": int_state.final_strategy.refined_query,
+                "keywords": int_state.final_strategy.keywords,
+                "domains": int_state.final_strategy.domains,
+                "sources": int_state.final_strategy.sources or sources.split(","),
+                "max_papers": max_papers,
+                "focus_areas": int_state.final_strategy.focus_areas,
+            }
+        else:
+            strategy = {
+                "refined_query": question,
+                "keywords": [],
+                "sources": sources.split(","),
+                "max_papers": max_papers,
+            }
+
+        console.print(f"\n  Refined query: [green]{strategy['refined_query']}[/]")
+        session.advance(SessionPhase.SEARCHING, search_strategy=strategy,
+                        interview_rounds=[
+                            {"q": r.question, "a": r.answer}
+                            for r in int_state.rounds
+                        ])
+        state = session.state
+
+    elif state.phase == SessionPhase.INTERVIEW and skip_interview:
+        strategy = state.search_strategy or {
+            "refined_query": question,
+            "sources": sources.split(","),
+        }
+        session.advance(SessionPhase.SEARCHING, search_strategy=strategy)
+        state = session.state
+
+    # ── Step 3: Multi-Source Search ──
+    if state.phase == SessionPhase.SEARCHING:
+        console.print("\n[bold blue]══ Step 3: Multi-Source Search ══[/]")
+        strategy = state.search_strategy
+        search_sources = strategy.get("sources", sources.split(","))
+        keywords = strategy.get("keywords", [])
+
+        console.print(f"  Query: [green]{strategy.get('refined_query', question)}[/]")
+        console.print(f"  Sources: [cyan]{', '.join(search_sources)}[/]")
+        if keywords:
+            console.print(f"  Keywords: [yellow]{', '.join(keywords[:5])}[/]")
+
+        with console.status("[bold]Searching across sources..."):
+            searcher = UnifiedSearcher()
+            search_result = searcher.search(
+                query=strategy.get("refined_query", question),
+                keywords=keywords,
+                sources=search_sources,
+                max_per_source=max_papers // len(search_sources) if search_sources else max_papers,
+            )
+
+        console.print(f"  Found: [bold green]{search_result.total_found}[/] papers ({search_result.duration:.1f}s)")
+        for src, count in search_result.source_counts.items():
+            console.print(f"    {src}: {count} papers")
+        for src, err in search_result.errors.items():
+            console.print(f"    [red]{src}: {err}[/]")
+
+        # Save papers to DB
+        from ml_platform.db import PapersDB
+        db = PapersDB()
+        paper_dicts = []
+        for p in search_result.papers:
+            db.upsert_paper(p)
+            paper_dicts.append({
+                "arxiv_id": p.arxiv_id or "",
+                "paper_id": p.paper_id,
+                "title": p.title or "",
+                "abstract": p.abstract or "",
+                "year": p.year,
+                "authors": [a.name if hasattr(a, "name") else str(a) for a in (p.authors or [])],
+                "categories": p.categories or [],
+                "source": str(p.source.value) if hasattr(p.source, "value") else str(p.source),
+                "citation_count": p.citation_count,
+            })
+
+        session.advance(
+            SessionPhase.BUILDING,
+            discovered_papers=paper_dicts,
+            search_strategy=strategy,
+        )
+        state = session.state
+
+    # ── Step 4: Build KG + Wiki ──
+    if state.phase == SessionPhase.BUILDING:
+        console.print("\n[bold blue]══ Step 4: Building Knowledge Graph + Wiki ══[/]")
+
+        # Build KG
+        kg_stats = {}
+        try:
+            from ml_platform.graph.knowledge_graph import KnowledgeGraph
+            safe_topic = (state.search_strategy.get("refined_query", question)
+                         .replace(" ", "_").replace("/", "-")[:50])
+            kg = KnowledgeGraph.open(safe_topic)
+            db = PapersDB()
+            papers = db.get_papers(limit=100)
+            for paper in papers:
+                aid = paper.arxiv_id or paper.paper_id
+                aid_slug = aid.replace(".", "_").replace("/", "_")
+                kg.add_paper_node(paper_id=aid, title=paper.title or aid, year=paper.year)
+                for cat in (paper.categories or []):
+                    cat_slug = cat.replace(".", "_").replace(" ", "-").replace("/", "-")
+                    kg.add_node(node_id=f"cat_{cat_slug}", node_type="Category", label=cat, name=cat)
+                    kg.add_edge(f"paper_{aid_slug}", f"cat_{cat_slug}", "BELONGS_TO")
+            stats = kg.get_stats()
+            kg_stats = {"nodes": stats.node_count, "edges": stats.edge_count}
+            kg.close()
+            console.print(f"  KG: [green]{stats.node_count} nodes, {stats.edge_count} edges[/]")
+        except Exception as e:
+            console.print(f"  KG: [red]{e}[/]")
+
+        # Import to Wiki
+        wiki_stats = {}
+        try:
+            from ml_platform.wiki import WikiManager
+            wm = WikiManager()
+            if not wm.is_initialized:
+                wm.init()
+            import_result = wm.import_all_papers(limit=max_papers)
+            wiki_stats = {
+                "imported": import_result["imported"],
+                "indexed": import_result.get("total", import_result["imported"]),
+            }
+            console.print(f"  Wiki: [green]{import_result['imported']} imported[/]")
+        except Exception as e:
+            console.print(f"  Wiki: [red]{e}[/]")
+
+        session.advance(SessionPhase.REPORTING, kg_stats=kg_stats, wiki_stats=wiki_stats)
+        state = session.state
+
+    # ── Step 5: Generate Dashboard ──
+    if state.phase == SessionPhase.REPORTING:
+        console.print("\n[bold blue]══ Step 5: Generating Dashboard ══[/]")
+        gen = DashboardGenerator()
+        dashboard_path = gen.generate(
+            question=state.original_question,
+            session_id=state.session_id,
+            strategy=state.search_strategy,
+            papers=state.discovered_papers,
+            kg_stats=state.kg_stats,
+            wiki_stats=state.wiki_stats,
+            sources=sources.split(","),
+        )
+        console.print(f"  Dashboard: [green]{dashboard_path}[/]")
+
+        session.advance(SessionPhase.SELECTING, dashboard_path=str(dashboard_path))
+        state = session.state
+
+        if open_browser:
+            import webbrowser
+            webbrowser.open(str(dashboard_path))
+            console.print("\n[yellow]Dashboard opened in browser.[/]")
+            console.print("[yellow]Select papers in the dashboard, then continue here.[/]")
+
+    # ── Step 6: Paper Selection ──
+    if state.phase == SessionPhase.SELECTING:
+        console.print("\n[bold blue]══ Step 6: Paper Selection ══[/]")
+        console.print(f"  Papers found: [bold]{len(state.discovered_papers)}[/]")
+        console.print("\n  Options:")
+        console.print("    [cyan]1.[/] Enter paper IDs manually (comma-separated)")
+        console.print("    [cyan]2.[/] Load selection from dashboard export")
+        console.print("    [cyan]3.[/] Select all papers")
+        console.print("    [cyan]4.[/] Skip selection (end session)")
+
+        choice = typer.prompt("  Choose (1-4)", default="4")
+
+        selected_ids = []
+        if choice == "1":
+            ids_str = typer.prompt("  Enter arXiv IDs (comma-separated)")
+            selected_ids = [x.strip() for x in ids_str.split(",") if x.strip()]
+        elif choice == "2":
+            import json
+            from pathlib import Path
+            fpath = typer.prompt("  Path to selected_papers.json")
+            try:
+                data = json.loads(Path(fpath).read_text())
+                selected_ids = data.get("selected_papers", [])
+            except Exception as e:
+                console.print(f"  [red]Error loading file: {e}[/]")
+        elif choice == "3":
+            selected_ids = [
+                p.get("arxiv_id", "")
+                for p in state.discovered_papers
+                if p.get("arxiv_id")
+            ]
+        else:
+            console.print("  [yellow]Skipping paper selection.[/]")
+            session.advance(SessionPhase.COMPLETED)
+            console.print(f"\n[green]Session {state.session_id} completed.[/]")
+            console.print(f"  Dashboard: {state.dashboard_path}")
+            console.print(f"  Papers: {len(state.discovered_papers)}")
+            return
+
+        if not selected_ids:
+            console.print("  [yellow]No papers selected.[/]")
+            session.advance(SessionPhase.COMPLETED)
+            return
+
+        console.print(f"  Selected: [bold green]{len(selected_ids)}[/] papers")
+        for pid in selected_ids[:10]:
+            console.print(f"    - {pid}")
+        if len(selected_ids) > 10:
+            console.print(f"    ... and {len(selected_ids) - 10} more")
+
+        session.advance(SessionPhase.IMPLEMENTING, selected_papers=selected_ids)
+        state = session.state
+
+    # ── Step 7: DeepCode Implementation ──
+    if state.phase == SessionPhase.IMPLEMENTING:
+        console.print("\n[bold blue]══ Step 7: DeepCode Implementation ══[/]")
+        console.print(f"  Implementing [bold]{len(state.selected_papers)}[/] papers...")
+
+        codegen_results = []
+        try:
+            from ml_platform.codegen.deepcode_runner import DeepCodeRunner
+            runner = DeepCodeRunner()
+
+            for paper_id in state.selected_papers:
+                console.print(f"\n  [cyan]Processing: {paper_id}[/]")
+                try:
+                    with console.status(f"[bold]Running DeepCode for {paper_id}..."):
+                        result = runner.run_paper(paper_id)
+                    codegen_results.append({
+                        "paper_id": paper_id,
+                        "success": result.success,
+                        "files": result.files_generated,
+                        "output_dir": result.output_dir,
+                        "duration": result.duration_seconds,
+                    })
+                    if result.success:
+                        console.print(f"    [green]✓[/] {len(result.files_generated)} files generated")
+                    else:
+                        console.print(f"    [red]✗[/] {result.error}")
+                except Exception as e:
+                    console.print(f"    [red]✗[/] {e}")
+                    codegen_results.append({
+                        "paper_id": paper_id,
+                        "success": False,
+                        "error": str(e),
+                    })
+        except ImportError:
+            console.print("  [yellow]DeepCode not available. Install deepcode-hku first.[/]")
+        except Exception as e:
+            console.print(f"  [red]DeepCode error: {e}[/]")
+
+        session.advance(SessionPhase.ANALYZING, codegen_results=codegen_results)
+        state = session.state
+
+    # ── Step 8: Reproducibility Analysis ──
+    if state.phase == SessionPhase.ANALYZING:
+        console.print("\n[bold blue]══ Step 8: Reproducibility Analysis ══[/]")
+        from ml_platform.agent.reproducibility import ReproducibilityAnalyzer
+
+        analyzer = ReproducibilityAnalyzer()
+        repro_reports = []
+
+        for cg_result in state.codegen_results:
+            if not cg_result.get("success"):
+                repro_reports.append({
+                    "paper_id": cg_result.get("paper_id", ""),
+                    "overall_score": 0,
+                    "status": "no_code",
+                })
+                continue
+
+            # Get paper abstract
+            from ml_platform.db import PapersDB
+            db = PapersDB()
+            paper = db.get_paper_by_arxiv(cg_result["paper_id"])
+            abstract = paper.abstract if paper else ""
+
+            report = analyzer.analyze(
+                paper_id=cg_result["paper_id"],
+                paper_abstract=abstract,
+                code_dir=cg_result.get("output_dir", ""),
+            )
+            repro_reports.append({
+                "paper_id": report.paper_id,
+                "overall_score": report.overall_score,
+                "status": "analyzed",
+                "components": [{"name": c.name, "status": c.status, "confidence": c.confidence} for c in report.components],
+                "total_lines": report.total_lines,
+                "suggestions": report.suggestions,
+            })
+            score_color = "green" if report.overall_score >= 60 else "yellow" if report.overall_score >= 30 else "red"
+            console.print(
+                f"  {report.paper_id}: [{score_color}]{report.overall_score:.0f}%[/]"
+                f" ({report.total_lines} lines, {len(report.generated_files)} files)"
+            )
+
+        session.advance(SessionPhase.COMPLETED, reproducibility_report={"reports": repro_reports})
+        state = session.state
+
+    # ── Step 9: Future Work (optional) ──
+    console.print("\n[bold blue]══ Step 9: Future Work Planning ══[/]")
+    want_future = typer.confirm("  Generate future work suggestions?", default=True)
+    if want_future:
+        from ml_platform.agent.future_work import FutureWorkPlanner
+        planner = FutureWorkPlanner()
+        fw_report = planner.plan(
+            question=state.original_question,
+            papers=state.discovered_papers,
+            reproducibility_reports=state.reproducibility_report.get("reports", []),
+            kg_stats=state.kg_stats,
+            session_id=state.session_id,
+        )
+        session.state.future_work = [
+            {"title": i.title, "priority": i.priority, "difficulty": i.difficulty,
+             "description": i.description}
+            for i in fw_report.items
+        ]
+        session._save()
+
+        console.print(f"\n  Summary: {fw_report.summary[:200]}")
+        for i, item in enumerate(fw_report.items, 1):
+            priority_color = {"high": "red", "medium": "yellow", "low": "green"}.get(item.priority, "white")
+            console.print(f"  [{priority_color}]{i}. {item.title}[/] ({item.priority}/{item.difficulty})")
+            console.print(f"     {item.description[:100]}")
+
+    # ── Final Summary ──
+    console.print(Panel(
+        f"[bold green]Research Session Complete![/]\n\n"
+        f"[bold]Session:[/] {state.session_id}\n"
+        f"[bold]Question:[/] {state.original_question}\n"
+        f"[bold]Papers found:[/] {len(state.discovered_papers)}\n"
+        f"[bold]Papers selected:[/] {len(state.selected_papers)}\n"
+        f"[bold]Code generated:[/] {sum(1 for r in state.codegen_results if r.get('success'))}\n"
+        f"[bold]Dashboard:[/] {state.dashboard_path}\n\n"
+        f"[dim]Resume: ml-research research --resume {state.session_id}[/dim]",
+        title="Session Summary",
+    ))
+
+
+@app.command("sessions")
+def list_sessions() -> None:
+    """List all research sessions."""
+    from ml_platform.agent.session import ResearchSession
+    session = ResearchSession()
+    sessions = session.list_sessions()
+
+    if not sessions:
+        console.print("[yellow]No sessions found.[/]")
+        return
+
+    for s in sessions:
+        console.print(
+            f"  [cyan]{s['session_id']}[/] "
+            f"[dim]{s['created_at'][:16]}[/] "
+            f"[{s['phase']}] "
+            f"{s['question'][:60]}... "
+            f"({s['papers']} papers)"
+        )
+
+

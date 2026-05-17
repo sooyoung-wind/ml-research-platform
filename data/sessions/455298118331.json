@@ -1,0 +1,40 @@
+{
+  "session_id": "455298118331",
+  "created_at": "2026-05-17T17:47:19.316066",
+  "updated_at": "2026-05-17T17:47:43.908325",
+  "phase": "selecting",
+  "original_question": "retrieval augmented generation hallucination reduction",
+  "interview_rounds": [],
+  "search_strategy": {
+    "refined_query": "effective methods for reducing hallucinations in Retrieval Augmented Generation (RAG) systems",
+    "keywords": [
+      "Retrieval Augmented Generation",
+      "hallucination mitigation",
+      "factuality",
+      "faithfulness",
+      "knowledge grounding"
+    ],
+    "domains": [
+      "NLP"
+    ],
+    "sources": [
+      "arxiv"
+    ],
+    "max_papers": 5
+  },
+  "discovered_papers": [],
+  "selected_papers": [],
+  "kg_stats": {
+    "nodes": 20,
+    "edges": 40
+  },
+  "wiki_stats": {
+    "imported": 0,
+    "indexed": 5
+  },
+  "dashboard_path": "/home/soo/Github/ml-research-platform/data/dashboards/dashboard_455298118331_1779007663.html",
+  "codegen_results": [],
+  "reproducibility_report": {},
+  "future_work": [],
+  "error": ""
+}

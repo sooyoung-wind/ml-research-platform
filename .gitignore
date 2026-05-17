@@ -38,3 +38,5 @@ data/graphs/viz_*.html
 data/trends/
 data/maps/*.html
 data/wiki/
+data/dashboards/
+data/sessions/
