@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from datetime import datetime
 from pathlib import Path
 
 import typer
@@ -1057,6 +1058,94 @@ def graph_view(
     console.print(f"[green]Visualization:[/] {path}")
 
 
+# ── Trend commands ──────────────────────────────────────────────────
+
+
+@app.command("trend")
+def trend_analyze(
+    top_n: int = typer.Option(10, "--top", "-n", help="Number of top/declining topics"),
+    format: str = typer.Option("text", "--format", "-f", help="Output format: text, md, html"),
+    output: str = typer.Option(None, "--output", "-o", help="Output file path"),
+    open_browser: bool = typer.Option(True, "--open/--no-open", help="Open HTML in browser"),
+) -> None:
+    """Analyze research trends across papers in the database."""
+    from ml_platform.analysis.trends import TrendAnalyzer
+
+    analyzer = TrendAnalyzer()
+    report = analyzer.analyze(top_n=top_n)
+
+    if format == "html":
+        html = analyzer.generate_report_html(report)
+        if output:
+            out_path = Path(output)
+        else:
+            out_path = Path("data/trends") / f"trend_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(html)
+        console.print(f"[green]HTML report:[/] {out_path}")
+        if open_browser:
+            import webbrowser
+            webbrowser.open(f"file://{out_path.resolve()}")
+    elif format == "md":
+        md = analyzer.generate_report_markdown(report)
+        if output:
+            Path(output).write_text(md)
+            console.print(f"[green]Markdown report:[/] {output}")
+        else:
+            console.print(md)
+    else:
+        _print_trend_report(report)
+
+
+def _print_trend_report(report) -> None:
+    """Pretty-print trend report to console."""
+    console.print(Panel(
+        f"[bold]Papers:[/] {report.total_papers}  |  "
+        f"[bold]Years:[/] {report.year_range[0]}–{report.year_range[1]}",
+        title="Research Trend Report",
+    ))
+
+    # Top topics
+    if report.top_topics:
+        table = Table(title="Trending Topics")
+        table.add_column("Category", style="bold")
+        table.add_column("Papers", justify="right")
+        table.add_column("Growth", justify="right")
+        table.add_column("Yearly", style="dim")
+
+        for t in report.top_topics:
+            yearly_str = " → ".join(f"{b.year}:{b.count}" for b in t.yearly[-5:])
+            growth = f"{t.growth_rate:+.0%}" if t.growth_rate else "—"
+            style = "green" if t.growth_rate > 0 else "red" if t.growth_rate < 0 else None
+            table.add_row(t.topic, str(t.total), f"[{style}]{growth}[/{style}]" if style else growth, yearly_str)
+
+        console.print(table)
+
+    # Research gaps
+    if report.research_gaps:
+        console.print("\n[bold]Research Gaps:[/]")
+        for g in report.research_gaps[:8]:
+            icon = {"underexplored": "🕳️", "emerging": "🌱", "declining": "📉"}.get(g.gap_type, "❓")
+            style = {"emerging": "green", "underexplored": "yellow", "declining": "red"}.get(g.gap_type, "")
+            bar = "█" * int(g.opportunity_score * 10)
+            console.print(
+                f"  {icon} [{style}][{g.gap_type.title()}][/{style}] "
+                f"opportunity: {g.opportunity_score:.0%} {bar}"
+            )
+            console.print(f"     {g.description[:90]}")
+
+    # Methods
+    if report.method_trends:
+        table = Table(title="Methodology Trends")
+        table.add_column("Method", style="bold")
+        table.add_column("Papers", justify="right")
+        table.add_column("Domains")
+        table.add_column("Period")
+        for m in report.method_trends[:10]:
+            period = f"{m.first_seen}–{m.latest_seen}" if m.first_seen else "—"
+            domains = ", ".join(m.domains[:3]) or "—"
+            table.add_row(m.method_name, str(m.papers_using), domains, period)
+        console.print(table)
 def _print_stats(stats) -> None:
     """Pretty-print graph statistics."""
     console.print(Panel(
